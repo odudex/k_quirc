@@ -236,8 +236,8 @@ int main(void) {
         memcpy(payload_preview, result.data.payload, len);
         payload_preview[len] = '\0';
       }
-      printf("%-28s  %-7s  %8.2f  %-6s %-6s  %-18s  %s\n", filenames[i],
-             "YES", ms, caps_str, grids_str, "", payload_preview);
+      printf("%-28s  %-7s  %8.2f  %-6s %-6s  %-18s  %s\n", filenames[i], "YES",
+             ms, caps_str, grids_str, "", payload_preview);
     } else {
       const char *err_str = "";
       if (grids == 0 && caps == 0)
@@ -252,10 +252,9 @@ int main(void) {
       if (grid_size > 0) {
         int align_found = (q->grids[0].align_region >= 0);
         struct quirc_grid *gr = &q->grids[0];
-        printf("  gs=%d v%d align=%s caps=[%d,%d,%d]",
-               grid_size, (grid_size - 17) / 4,
-               align_found ? "YES" : "NO",
-               gr->caps[0], gr->caps[1], gr->caps[2]);
+        printf("  gs=%d v%d align=%s caps=[%d,%d,%d]", grid_size,
+               (grid_size - 17) / 4, align_found ? "YES" : "NO", gr->caps[0],
+               gr->caps[1], gr->caps[2]);
       }
       printf("\n");
 
@@ -280,9 +279,9 @@ int main(void) {
         k_quirc_error_t se;
         int sc, sg;
         if (try_decode(q, pixels, w, h, sweep_offsets[s], &sr, &se, &sc, &sg)) {
-          sweep_pos += snprintf(sweep_buf + sweep_pos,
-                                sizeof(sweep_buf) - sweep_pos, "%s%d",
-                                sweep_hits ? "," : "", sweep_offsets[s]);
+          sweep_pos +=
+              snprintf(sweep_buf + sweep_pos, sizeof(sweep_buf) - sweep_pos,
+                       "%s%d", sweep_hits ? "," : "", sweep_offsets[s]);
           sweep_hits++;
         }
       }
