@@ -16,6 +16,9 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_ADAPTIVE_THRESHOLD)
 # Comment out to disable (uses single global threshold instead)
 target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_BILINEAR_THRESHOLD)
 
+# Uncomment to enable the inverted-colors retry pass when no QR is found.
+# target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_INVERTED_RETRY)
+
 # Uncomment to enable QR debug visualization mode
 # This shows the thresholded pixel buffer with timing pattern overlays
 # target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_DEBUG)

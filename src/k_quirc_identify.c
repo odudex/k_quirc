@@ -1118,6 +1118,7 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
   for (int i = 0; i < q->num_capstones; i++)
     test_grouping(q, i);
 
+#ifdef K_QUIRC_INVERTED_RETRY
   if (q->num_grids == 0 && find_inverted) {
     vTaskDelay(1);
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
@@ -1140,4 +1141,7 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
     for (int i = 0; i < q->num_capstones; i++)
       test_grouping(q, i);
   }
+#else
+  (void)find_inverted;
+#endif
 }
