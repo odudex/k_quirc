@@ -92,6 +92,11 @@ int k_quirc_count(const k_quirc_t *q) { return q->num_grids; }
 
 k_quirc_error_t k_quirc_decode(k_quirc_t *q, int index,
                                k_quirc_result_t *result) {
+  memset(result, 0, sizeof(*result));
+
+  if (index < 0 || index >= q->num_grids)
+    return K_QUIRC_ERROR_INVALID_GRID_SIZE;
+
   struct quirc_code *code = K_MALLOC_FAST(sizeof(struct quirc_code));
   if (!code)
     code = K_MALLOC(sizeof(struct quirc_code));
@@ -105,15 +110,6 @@ k_quirc_error_t k_quirc_decode(k_quirc_t *q, int index,
     if (data)
       K_FREE(data);
     return K_QUIRC_ERROR_ALLOC_FAILED;
-  }
-
-  memset(result, 0, sizeof(*result));
-  result->valid = false;
-
-  if (index < 0 || index >= q->num_grids) {
-    K_FREE(code);
-    K_FREE(data);
-    return K_QUIRC_ERROR_INVALID_GRID_SIZE;
   }
 
   quirc_extract_internal(q, index, code);

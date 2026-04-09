@@ -268,7 +268,6 @@ static int format_syndromes(uint16_t u, uint8_t *s) {
   memset(s, 0, MAX_POLY);
 
   for (int i = 0; i < FORMAT_SYNDROMES; i++) {
-    s[i] = 0;
     for (int j = 0; j < FORMAT_BITS; j++)
       if (u & (1 << j))
         s[i] ^= gf16_exp[((i + 1) * j) % 15];

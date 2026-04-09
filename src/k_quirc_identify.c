@@ -607,7 +607,7 @@ static void test_capstone(struct k_quirc *q, int x, int y, int *pb) {
     return;
 
   int ratio = stone_reg->count * 100 / ring_reg->count;
-  if (ratio < 10 || ratio > 70)
+  if (ratio < 5 || ratio > 80)
     return;
 
   record_capstone(q, ring_left, stone);
@@ -831,8 +831,16 @@ static void update_threshold_offset(int bias) {
 }
 
 int k_quirc_get_threshold_offset(void) { return threshold_offset; }
+void k_quirc_set_threshold_offset(int offset) {
+  if (offset > THRESHOLD_OFFSET_MAX)
+    offset = THRESHOLD_OFFSET_MAX;
+  else if (offset < -THRESHOLD_OFFSET_MAX)
+    offset = -THRESHOLD_OFFSET_MAX;
+  threshold_offset = offset;
+}
 #else
 int k_quirc_get_threshold_offset(void) { return 0; }
+void k_quirc_set_threshold_offset(int offset) { (void)offset; }
 #endif
 
 #define JIGGLE_PASSES 2
@@ -840,28 +848,21 @@ int k_quirc_get_threshold_offset(void) { return 0; }
 static void jiggle_perspective(struct k_quirc *q, int index) {
   struct quirc_grid *qr = &q->grids[index];
   int best = fitness_all(q, index);
-  int pass;
   float adjustments[8];
 
   float step_factor = 0.42f / (float)qr->grid_size;
   for (int i = 0; i < 8; i++)
     adjustments[i] = qr->c[i] * step_factor;
 
-  for (pass = 0; pass < JIGGLE_PASSES; pass++) {
+  for (int pass = 0; pass < JIGGLE_PASSES; pass++) {
     for (int i = 0; i < 16; i++) {
       int j = i >> 1;
-      int test;
       float old = qr->c[j];
       float step = adjustments[j];
-      float new_val;
-
-      if (i & 1)
-        new_val = old + step;
-      else
-        new_val = old - step;
+      float new_val = (i & 1) ? old + step : old - step;
 
       qr->c[j] = new_val;
-      test = fitness_all(q, index);
+      int test = fitness_all(q, index);
 
       if (test > best)
         best = test;
@@ -899,6 +900,7 @@ static void setup_qr_perspective(struct k_quirc *q, int index) {
 
   perspective_setup_direct(qr->c, img, mod);
   jiggle_perspective(q, index);
+
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
   qr->timing_bias = timing_bias(q, index);
   if (!processing_inverted)
@@ -934,6 +936,8 @@ static void measure_grid_size(struct k_quirc *q, int index) {
   float grid_size_estimate = (ver_grid + hor_grid) * 0.5f;
 
   int ver = (int)((grid_size_estimate - 15.0f) * 0.25f);
+  if (ver > QUIRC_MAX_VERSION)
+    ver = QUIRC_MAX_VERSION;
 
   qr->grid_size = 4 * ver + 17;
 }
@@ -1013,83 +1017,125 @@ static void record_qr_grid(struct k_quirc *q, int a, int b, int c) {
       memcpy(&qr->align, &q->regions[qr->align_region].seed, sizeof(qr->align));
   }
 
-  qr->tpep[2].x = qr->align.x;
-  qr->tpep[2].y =
-      q->capstones[a].center.y + (q->capstones[a].center.y - qr->align.y);
-
   setup_qr_perspective(q, q->num_grids);
   q->num_grids++;
 }
 
-struct neighbour {
-  int index;
-  float distance;
-};
-
-struct neighbour_list {
-  struct neighbour n[QUIRC_MAX_CAPSTONES];
-  int count;
-};
-
-static void test_neighbours(struct k_quirc *q, int i,
-                            const struct neighbour_list *hlist,
-                            const struct neighbour_list *vlist) {
-  for (int j = 0; j < hlist->count; j++) {
-    const struct neighbour *hn = &hlist->n[j];
-    for (int k = 0; k < vlist->count; k++) {
-      const struct neighbour *vn = &vlist->n[k];
-      float squareness = fabsf(1.0f - hn->distance / vn->distance);
-      if (squareness < 0.2f)
-        record_qr_grid(q, hn->index, i, vn->index);
-    }
-  }
+/*
+ * Geometric grouping: detect right-angle triangles formed by capstone centers.
+ *
+ * In a valid QR code the three finder patterns always form a right-angle
+ * triangle.  The right-angle vertex is the "top-left" capstone in QR
+ * terminology.  We detect this directly from image-space distances using the
+ * Pythagorean theorem, which is far more robust than perspective_unmap when
+ * the QR code is viewed at a steep angle or is very dense.
+ */
+ALWAYS_INLINE float dist2(const struct quirc_point *a,
+                          const struct quirc_point *b) {
+  float dx = (float)(a->x - b->x);
+  float dy = (float)(a->y - b->y);
+  return dx * dx + dy * dy;
 }
 
-static void test_grouping(struct k_quirc *q, int i) {
-  struct quirc_capstone *c1 = &q->capstones[i];
-  struct neighbour_list hlist, vlist;
+/* Maximum candidate triplets to evaluate before selecting the best */
+#define MAX_CANDIDATES 16
 
-  if (c1->qr_grid >= 0)
-    return;
+struct triplet_candidate {
+  int leg1, vertex, leg2;
+  float score; /* higher = better (leg_ratio * (1 - pyth_error)) */
+};
 
-  if (q->num_grids >= QUIRC_MAX_GRIDS)
-    return;
+static void geometric_grouping(struct k_quirc *q) {
+  int n = q->num_capstones;
+  struct triplet_candidate candidates[MAX_CANDIDATES];
+  int ncand = 0;
 
-  hlist.count = 0;
-  vlist.count = 0;
+  /* Collect all valid right-angle triplets */
+  for (int i = 0; i < n - 2; i++) {
+    for (int j = i + 1; j < n - 1; j++) {
+      for (int k = j + 1; k < n; k++) {
 
-  for (int j = 0; j < q->num_capstones; j++) {
-    struct quirc_capstone *c2 = &q->capstones[j];
-    float u, v;
+        float d2_ij = dist2(&q->capstones[i].center, &q->capstones[j].center);
+        float d2_ik = dist2(&q->capstones[i].center, &q->capstones[k].center);
+        float d2_jk = dist2(&q->capstones[j].center, &q->capstones[k].center);
 
-    if (i == j)
-      continue;
+        /* Find hypotenuse (longest side).  The vertex opposite it has the
+         * right angle and corresponds to the top-left finder pattern. */
+        float d2_hyp, d2_a, d2_b;
+        int vertex, leg1, leg2;
 
-    if (c2->qr_grid >= 0)
-      continue;
+        if (d2_jk >= d2_ij && d2_jk >= d2_ik) {
+          d2_hyp = d2_jk;
+          d2_a = d2_ij;
+          d2_b = d2_ik;
+          vertex = i;
+          leg1 = j;
+          leg2 = k;
+        } else if (d2_ik >= d2_ij && d2_ik >= d2_jk) {
+          d2_hyp = d2_ik;
+          d2_a = d2_ij;
+          d2_b = d2_jk;
+          vertex = j;
+          leg1 = i;
+          leg2 = k;
+        } else {
+          d2_hyp = d2_ij;
+          d2_a = d2_ik;
+          d2_b = d2_jk;
+          vertex = k;
+          leg1 = i;
+          leg2 = j;
+        }
 
-    perspective_unmap(c1->c, &c2->center, &u, &v);
+        /* Pythagorean check: a² + b² ≈ c²  (right-angle test) */
+        float expected = d2_a + d2_b;
+        if (expected < 100.0f)
+          continue;
 
-    u = fabsf(u - 3.5f);
-    v = fabsf(v - 3.5f);
+        float pyth_error = fabsf(1.0f - d2_hyp / expected);
+        if (pyth_error > 0.25f)
+          continue;
 
-    if (u < 0.2f * v && hlist.count < QUIRC_MAX_CAPSTONES) {
-      struct neighbour *n = &hlist.n[hlist.count++];
-      n->index = j;
-      n->distance = v;
-    }
+        /* Leg ratio: reject if legs are wildly different (squared) */
+        float leg_ratio = (d2_a < d2_b) ? d2_a / d2_b : d2_b / d2_a;
+        if (leg_ratio < 0.1f)
+          continue;
 
-    if (v < 0.2f * u && vlist.count < QUIRC_MAX_CAPSTONES) {
-      struct neighbour *n = &vlist.n[vlist.count++];
-      n->index = j;
-      n->distance = u;
+        if (ncand < MAX_CANDIDATES) {
+          candidates[ncand].leg1 = leg1;
+          candidates[ncand].vertex = vertex;
+          candidates[ncand].leg2 = leg2;
+          /* Score: prefer square triangles with perfect right angles */
+          candidates[ncand].score = leg_ratio * (1.0f - pyth_error);
+          ncand++;
+        }
+      }
     }
   }
 
-  if (!(hlist.count && vlist.count))
-    return;
+  /* Sort candidates by score descending (simple insertion sort) */
+  for (int i = 1; i < ncand; i++) {
+    struct triplet_candidate tmp = candidates[i];
+    int j = i - 1;
+    while (j >= 0 && candidates[j].score < tmp.score) {
+      candidates[j + 1] = candidates[j];
+      j--;
+    }
+    candidates[j + 1] = tmp;
+  }
 
-  test_neighbours(q, i, &hlist, &vlist);
+  /* Record grids in score order, skipping capstones already used */
+  for (int i = 0; i < ncand; i++) {
+    if (q->num_grids >= QUIRC_MAX_GRIDS)
+      return;
+    int l1 = candidates[i].leg1;
+    int v = candidates[i].vertex;
+    int l2 = candidates[i].leg2;
+    if (q->capstones[l1].qr_grid >= 0 || q->capstones[v].qr_grid >= 0 ||
+        q->capstones[l2].qr_grid >= 0)
+      continue;
+    record_qr_grid(q, l1, v, l2);
+  }
 }
 
 static void pixels_setup(struct k_quirc *q) {
@@ -1115,8 +1161,7 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
   for (int i = 0; i < q->h; i++)
     finder_scan(q, i);
 
-  for (int i = 0; i < q->num_capstones; i++)
-    test_grouping(q, i);
+  geometric_grouping(q);
 
 #ifdef K_QUIRC_INVERTED_RETRY
   if (q->num_grids == 0 && find_inverted) {
@@ -1128,18 +1173,13 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
     q->num_capstones = 0;
     q->num_grids = 0;
 
-    /* Invert thresholded buffer (region codes were BLACK, so invert to WHITE)
-     */
-    int total_pixels = q->w * q->h;
-    for (int i = 0; i < total_pixels; i++) {
-      q->pixels[i] = (q->pixels[i] == QUIRC_PIXEL_WHITE) ? QUIRC_PIXEL_BLACK
-                                                         : QUIRC_PIXEL_WHITE;
-    }
+    pixels_setup(q);
+    threshold(q, true);
+
     for (int i = 0; i < q->h; i++)
       finder_scan(q, i);
 
-    for (int i = 0; i < q->num_capstones; i++)
-      test_grouping(q, i);
+    geometric_grouping(q);
   }
 #else
   (void)find_inverted;

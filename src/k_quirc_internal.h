@@ -88,9 +88,6 @@ struct quirc_grid {
   int caps[3];
   int align_region;
   struct quirc_point align;
-  struct quirc_point tpep[3];
-  int hscan;
-  int vscan;
   int grid_size;
   float c[QUIRC_PERSPECTIVE_PARAMS];
   int timing_bias;
@@ -165,6 +162,7 @@ ALWAYS_INLINE void perspective_map(const float *c, float u, float v,
  */
 void k_quirc_identify(struct k_quirc *q, bool find_inverted);
 int k_quirc_get_threshold_offset(void);
+void k_quirc_set_threshold_offset(int offset);
 
 /*
  * Decode module functions (k_quirc_decode.c)
