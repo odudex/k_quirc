@@ -1,0 +1,8 @@
+#ifndef ESP_LOG_H_STUB
+#define ESP_LOG_H_STUB
+#include <stdio.h>
+#define ESP_LOGW(tag, fmt, ...) fprintf(stderr, "W (%s) " fmt "\n", tag, ##__VA_ARGS__)
+#define ESP_LOGE(tag, fmt, ...) fprintf(stderr, "E (%s) " fmt "\n", tag, ##__VA_ARGS__)
+#define ESP_LOGI(tag, fmt, ...) ((void)0)
+#define ESP_LOGD(tag, fmt, ...) ((void)0)
+#endif

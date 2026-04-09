@@ -1,4 +1,5 @@
 build/
 sdkconfig
 sdkconfig.old
-pgm_samples/
+/pgm_samples/
+test/pgm_samples/
