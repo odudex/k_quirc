@@ -4,6 +4,12 @@
 #include <string.h>
 #include <time.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_NO_LINEAR
+#define STBI_NO_HDR
+#include "stb_image.h"
+
 #include "k_quirc.h"
 #include "k_quirc_internal.h"
 
@@ -125,6 +131,20 @@ static int ends_with(const char *s, const char *suffix) {
   return strcmp(s + slen - suflen, suffix) == 0;
 }
 
+static uint8_t *load_png(const char *path, int *w, int *h) {
+  int channels;
+  uint8_t *pixels = stbi_load(path, w, h, &channels, 1); /* force grayscale */
+  return pixels;
+}
+
+static uint8_t *load_image(const char *path, int *w, int *h) {
+  if (ends_with(path, ".pgm"))
+    return load_pgm(path, w, h);
+  if (ends_with(path, ".png"))
+    return load_png(path, w, h);
+  return NULL;
+}
+
 /* Try to decode a sample with a given threshold offset.
  * Returns 1 if decoded, 0 otherwise. */
 static int try_decode(k_quirc_t *q, const uint8_t *pixels, int w, int h,
@@ -159,7 +179,7 @@ int main(void) {
   int nfiles = 0;
   struct dirent *ent;
   while ((ent = readdir(dir)) != NULL && nfiles < MAX_FILES) {
-    if (ends_with(ent->d_name, ".pgm")) {
+    if (ends_with(ent->d_name, ".pgm") || ends_with(ent->d_name, ".png")) {
       filenames[nfiles++] = strdup(ent->d_name);
     }
   }
@@ -186,7 +206,7 @@ int main(void) {
     snprintf(path, sizeof(path), "%s/%s", SAMPLES_DIR, filenames[i]);
 
     int w, h;
-    uint8_t *pixels = load_pgm(path, &w, &h);
+    uint8_t *pixels = load_image(path, &w, &h);
     if (!pixels) {
       printf("%-28s  %-7s  %8s  %-6s %-6s  %-18s  %s\n", filenames[i], "ERR",
              "-", "-", "-", "load failed", "");

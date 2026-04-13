@@ -1,6 +1,6 @@
 # k_quirc Desktop Test
 
-Standalone test harness that runs the k_quirc QR decoder on grayscale PGM images outside of ESP-IDF. Validates the full detection and decoding pipeline on desktop Linux and reports per-image results with timing.
+Standalone test harness that runs the k_quirc QR decoder on grayscale images outside of ESP-IDF. Validates the full detection and decoding pipeline on desktop Linux and reports per-image results with timing.
 
 ## Building
 
@@ -17,13 +17,12 @@ This compiles the core k_quirc sources directly (not as an ESP component) with t
 
 ## Test Images
 
-The test reads all `.pgm` files from `test/pgm_samples/`. This directory is not checked in — you need to supply your own P5 (binary) PGM images of QR codes.
+The test reads all `.pgm` and `.png` files from `test/pgm_samples/`. This directory is not checked in — you need to supply your own images of QR codes.
 
-To convert other formats:
+Supported formats:
 
-```bash
-convert input.png -colorspace Gray output.pgm
-```
+- **PGM** — P5 (binary) grayscale
+- **PNG** — any color depth (automatically converted to grayscale via `stb_image`)
 
 ## Running
 
