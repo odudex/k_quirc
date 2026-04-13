@@ -1025,10 +1025,14 @@ static void record_qr_grid(struct k_quirc *q, int a, int b, int c) {
       int est = (int)sqrtf((float)areg->count) + 2;
       int x0 = areg->seed.x - est, y0 = areg->seed.y - est;
       int x1 = areg->seed.x + est, y1 = areg->seed.y + est;
-      if (x0 < 0) x0 = 0;
-      if (y0 < 0) y0 = 0;
-      if (x1 >= q->w) x1 = q->w - 1;
-      if (y1 >= q->h) y1 = q->h - 1;
+      if (x0 < 0)
+        x0 = 0;
+      if (y0 < 0)
+        y0 = 0;
+      if (x1 >= q->w)
+        x1 = q->w - 1;
+      if (y1 >= q->h)
+        y1 = q->h - 1;
       long sum_x = 0, sum_y = 0;
       int n = 0;
       for (int sy = y0; sy <= y1; sy++) {
