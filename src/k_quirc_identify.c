@@ -1013,8 +1013,40 @@ static void record_qr_grid(struct k_quirc *q, int a, int b, int c) {
 
   if (qr->grid_size > 21) {
     find_alignment_pattern(q, q->num_grids);
-    if (qr->align_region >= 0)
-      memcpy(&qr->align, &q->regions[qr->align_region].seed, sizeof(qr->align));
+    if (qr->align_region >= 0) {
+      /* Use the centroid of the alignment region, not the seed point.
+       * The seed is just the first pixel the spiral search landed on,
+       * which can be at the edge of the region rather than its center.
+       * This offset skews the perspective transform and causes decode
+       * failures, especially for low-version QR codes captured at
+       * high resolution where each module consists of many pixels. */
+      struct quirc_region *areg = &q->regions[qr->align_region];
+      int code = qr->align_region;
+      int est = (int)sqrtf((float)areg->count) + 2;
+      int x0 = areg->seed.x - est, y0 = areg->seed.y - est;
+      int x1 = areg->seed.x + est, y1 = areg->seed.y + est;
+      if (x0 < 0) x0 = 0;
+      if (y0 < 0) y0 = 0;
+      if (x1 >= q->w) x1 = q->w - 1;
+      if (y1 >= q->h) y1 = q->h - 1;
+      long sum_x = 0, sum_y = 0;
+      int n = 0;
+      for (int sy = y0; sy <= y1; sy++) {
+        for (int sx = x0; sx <= x1; sx++) {
+          if (q->pixels[sy * q->w + sx] == code) {
+            sum_x += sx;
+            sum_y += sy;
+            n++;
+          }
+        }
+      }
+      if (n > 0) {
+        qr->align.x = (int)(sum_x / n);
+        qr->align.y = (int)(sum_y / n);
+      } else {
+        memcpy(&qr->align, &areg->seed, sizeof(qr->align));
+      }
+    }
   }
 
   setup_qr_perspective(q, q->num_grids);
