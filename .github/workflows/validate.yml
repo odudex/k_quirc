@@ -64,17 +64,19 @@ jobs:
 
       - name: Show results summary
         if: always()
-        run: >
-          python3 -c "
-          import json, sys;
-          d = json.load(open('validation-results.json'));
-          s = d['summary'];
-          parts = [f\"{s['passed']}/{s['total']} passed ({s['pass_rate']}%)\"];
-          parts.append(f\"{s['expected_failures']} expected failures\");
-          if s.get('regressions', 0): parts.append(f\"REGRESSIONS: {s['regressions']}\");
-          if s.get('newly_passing', 0): parts.append(f\"newly passing: {s['newly_passing']} ***\");
+        run: |
+          python3 <<'PY'
+          import json
+          d = json.load(open('validation-results.json'))
+          s = d['summary']
+          parts = [f"{s['passed']}/{s['total']} passed ({s['pass_rate']}%)"]
+          parts.append(f"{s['expected_failures']} expected failures")
+          if s.get('regressions', 0):
+              parts.append(f"REGRESSIONS: {s['regressions']}")
+          if s.get('newly_passing', 0):
+              parts.append(f"newly passing: {s['newly_passing']} ***")
           print(', '.join(parts))
-          "
+          PY
 
       - name: Upload results
         if: always()
