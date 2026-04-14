@@ -55,6 +55,12 @@ When a sample fails to decode, the harness automatically:
 - **Dumps capstone geometry** if 3+ capstones were found but no grid formed — prints perspective-unmap coordinates and alignment ratios to diagnose grouping failures.
 - **Sweeps threshold offsets** from -20 to +20 (step 5) and reports which offsets would have succeeded, indicating threshold sensitivity.
 
+## Automated Validation
+
+The `validation/` directory contains a separate test suite that generates synthetic QR images across a matrix of versions, ECC levels, encoding modes, and scales, then runs them through this harness and validates that every decoded payload matches the expected data. See [`validation/README.md`](validation/README.md) for details.
+
+A GitHub Actions workflow at `.github/workflows/validate.yml` runs the full validation on push and PR.
+
 ## Stubs
 
 The `stubs/` directory provides minimal stand-ins for ESP-IDF and FreeRTOS headers so the k_quirc sources compile on desktop:
