@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import collections
 import csv
 import hashlib
 import json
@@ -564,6 +565,21 @@ def validate_results(cases, parsed, known_failures=None):
             'known_failure': is_known,
             'status': status,
         })
+
+    # Only report a configuration as "newly passing" if ALL iterations for
+    # that known-failure pattern passed.  Otherwise demote partial passes back
+    # to expected_failure — a pattern isn't actionable until every random
+    # payload variant succeeds.
+    by_base = collections.defaultdict(list)
+    for r in results:
+        if r['known_failure']:
+            by_base[filename_base(r['filename'])].append(r)
+    for group in by_base.values():
+        all_passing = all(r['status'] == 'newly_passing' for r in group)
+        if not all_passing:
+            for r in group:
+                if r['status'] == 'newly_passing':
+                    r['status'] = 'expected_failure'
 
     return results
 
