@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import warnings
+from concurrent.futures import ProcessPoolExecutor
 
 try:
     from PIL import Image
@@ -256,6 +257,19 @@ def _check_qrencode():
         print("Error: qrencode is required. Install with: "
               "apt install qrencode", file=sys.stderr)
         sys.exit(1)
+
+
+def _generate_one(args):
+    """Worker for parallel image generation. Returns (filename, ok, error)."""
+    case, tmp_dir = args
+    path = os.path.join(tmp_dir, case['filename'])
+    try:
+        ok = generate_test_image(
+            case['version'], case['ecc'], case['mode'],
+            case['payload'], case['ppm'], case['frame'], path)
+        return case['filename'], ok, '' if ok else 'qrencode/frame rejected'
+    except Exception as e:
+        return case['filename'], False, f'{type(e).__name__}: {e}'
 
 
 def generate_test_image(version, ecc, mode, payload, ppm, frame_size, path):
@@ -725,10 +739,8 @@ def main():
     if args.k_quirc_dir:
         k_quirc_dir = os.path.abspath(args.k_quirc_dir)
     else:
-        k_quirc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if not os.path.isdir(k_quirc_dir):
-            k_quirc_dir = os.path.abspath(os.path.join(
-                os.path.dirname(__file__), '..'))
+        k_quirc_dir = os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))
 
     test_dir = os.path.join(k_quirc_dir, 'test')
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -788,39 +800,65 @@ def main():
     print(f"  {len(cases)} test cases, {len(skipped)} skipped",
           file=sys.stderr)
 
-    # Step 3: Generate images to temp directory
-    tmp_dir = tempfile.mkdtemp(prefix='k_quirc_validation_')
-    print(f"Generating {len(cases)} test images...", file=sys.stderr)
-
-    for case in cases:
-        path = os.path.join(tmp_dir, case['filename'])
-        generate_test_image(
-            case['version'], case['ecc'], case['mode'],
-            case['payload'], case['ppm'], case['frame'], path)
-
-    # Step 4: Run test harness
-    print(f"Running k_quirc_test on {len(cases)} images...", file=sys.stderr)
-    stdout = run_harness(binary, tmp_dir)
-    parsed = parse_output(stdout)
-    print(f"  Harness reported {len(parsed)} results", file=sys.stderr)
-
-    # Step 5: Validate
-    results = validate_results(cases, parsed, known_failures)
-    regressions = [r for r in results if r['status'] == 'unexpected_failure']
-    newly_passing = [r for r in results if r['status'] == 'newly_passing']
-
-    # Step 6: Copy regression failure images (not expected failures)
-    if regressions:
-        os.makedirs(failures_dir, exist_ok=True)
-        for r in regressions:
-            src = os.path.join(tmp_dir, r['filename'])
-            if os.path.exists(src):
-                shutil.copy2(src, os.path.join(failures_dir, r['filename']))
-        print(f"  {len(regressions)} regression images saved to {failures_dir}",
+    # Step 3: Generate images to temp directory (parallel)
+    with tempfile.TemporaryDirectory(prefix='k_quirc_validation_') as tmp_dir:
+        workers = os.cpu_count() or 1
+        print(f"Generating {len(cases)} test images ({workers} workers)...",
               file=sys.stderr)
 
-    # Clean up temp directory
-    shutil.rmtree(tmp_dir)
+        gen_results = {}
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            for fname, ok, err in pool.map(
+                    _generate_one, ((c, tmp_dir) for c in cases),
+                    chunksize=32):
+                gen_results[fname] = (ok, err)
+
+        # Drop cases whose image wasn't produced; record as skipped.
+        generated_cases = []
+        for case in cases:
+            ok, err = gen_results.get(case['filename'], (False, 'no result'))
+            if ok:
+                generated_cases.append(case)
+            else:
+                skipped.append({
+                    'version': case['version'], 'ecc': case['ecc'],
+                    'mode': case['mode'], 'ppm': case['ppm'],
+                    'frame': case['frame'],
+                    'reason': f'image generation failed: {err}',
+                })
+        dropped = len(cases) - len(generated_cases)
+        if dropped:
+            print(f"  {dropped} images failed to generate (recorded as skipped)",
+                  file=sys.stderr)
+        cases = generated_cases
+
+        # Step 4: Run test harness
+        print(f"Running k_quirc_test on {len(cases)} images...",
+              file=sys.stderr)
+        try:
+            stdout = run_harness(binary, tmp_dir)
+        except subprocess.TimeoutExpired as e:
+            print(f"Error: harness timed out after {e.timeout}s",
+                  file=sys.stderr)
+            sys.exit(1)
+        parsed = parse_output(stdout)
+        print(f"  Harness reported {len(parsed)} results", file=sys.stderr)
+
+        # Step 5: Validate
+        results = validate_results(cases, parsed, known_failures)
+        regressions = [r for r in results
+                       if r['status'] == 'unexpected_failure']
+
+        # Step 6: Copy regression failure images (not expected failures)
+        if regressions:
+            os.makedirs(failures_dir, exist_ok=True)
+            for r in regressions:
+                src = os.path.join(tmp_dir, r['filename'])
+                if os.path.exists(src):
+                    shutil.copy2(src,
+                                 os.path.join(failures_dir, r['filename']))
+            print(f"  {len(regressions)} regression images saved to "
+                  f"{failures_dir}", file=sys.stderr)
 
     # Step 7: Output
     write_csv(results, args.csv_path)
