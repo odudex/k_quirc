@@ -1,0 +1,93 @@
+name: QR Decode Validation
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: 'QR version range (e.g. 1-6, 1-25)'
+        default: '1-25'
+      ecc:
+        description: 'ECC levels (comma-separated)'
+        default: 'L,M,Q,H'
+      modes:
+        description: 'Encoding modes (comma-separated)'
+        default: 'numeric,alphanumeric,byte'
+      ppm:
+        description: 'Pixels-per-module values (comma-separated)'
+        default: '3,5,8,13,20'
+      fill:
+        description: 'Fill percentages (comma-separated)'
+        default: '90'
+      frames:
+        description: 'Frame sizes (comma-separated)'
+        default: '320,480,640'
+      iterations:
+        description: 'Random payloads per configuration'
+        default: '3'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y qrencode
+          pip install -r test/validation/requirements.txt
+
+      - name: Build test harness
+        run: |
+          cd test
+          cmake -B build_ci
+          cmake --build build_ci
+
+      - name: Run validation
+        run: >
+          python3 test/validation/run_validation.py
+          --versions ${{ inputs.versions || '1-25' }}
+          --ecc ${{ inputs.ecc || 'L,M,Q,H' }}
+          --modes ${{ inputs.modes || 'numeric,alphanumeric,byte' }}
+          --ppm ${{ inputs.ppm || '3,5,8,13,20' }}
+          --fill ${{ inputs.fill || '90' }}
+          --frames ${{ inputs.frames || '320,480,640' }}
+          --iterations ${{ inputs.iterations || '3' }}
+          --json > validation-results.json
+
+      - name: Show results summary
+        if: always()
+        run: >
+          python3 -c "
+          import json, sys;
+          d = json.load(open('validation-results.json'));
+          s = d['summary'];
+          parts = [f\"{s['passed']}/{s['total']} passed ({s['pass_rate']}%)\"];
+          parts.append(f\"{s['expected_failures']} expected failures\");
+          if s.get('regressions', 0): parts.append(f\"REGRESSIONS: {s['regressions']}\");
+          if s.get('newly_passing', 0): parts.append(f\"newly passing: {s['newly_passing']} ***\");
+          print(', '.join(parts))
+          "
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-results
+          path: |
+            validation-results.json
+            validation-results.csv
+
+      - name: Upload failure images
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-images
+          path: test/validation/failures/

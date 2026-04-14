@@ -56,7 +56,6 @@ static void dump_grouping_diag(const struct k_quirc *q) {
 }
 
 #define MAX_RESULTS 4
-#define MAX_FILES 64
 #define PAYLOAD_DISPLAY_LEN 40
 
 static uint8_t *load_pgm(const char *path, int *w, int *h) {
@@ -168,20 +167,40 @@ static int try_decode(k_quirc_t *q, const uint8_t *pixels, int w, int h,
   return 0;
 }
 
-int main(void) {
-  DIR *dir = opendir(SAMPLES_DIR);
+int main(int argc, char **argv) {
+  const char *samples_dir = SAMPLES_DIR;
+  if (argc > 1)
+    samples_dir = argv[1];
+
+  int hex_output = (getenv("K_QUIRC_HEX_OUTPUT") != NULL);
+
+  DIR *dir = opendir(samples_dir);
   if (!dir) {
-    fprintf(stderr, "Cannot open samples directory: %s\n", SAMPLES_DIR);
+    fprintf(stderr, "Cannot open samples directory: %s\n", samples_dir);
     return 1;
   }
 
-  char *filenames[MAX_FILES];
-  int nfiles = 0;
+  /* First pass: count matching files */
+  int file_capacity = 0;
   struct dirent *ent;
-  while ((ent = readdir(dir)) != NULL && nfiles < MAX_FILES) {
-    if (ends_with(ent->d_name, ".pgm") || ends_with(ent->d_name, ".png")) {
+  while ((ent = readdir(dir)) != NULL) {
+    if (ends_with(ent->d_name, ".pgm") || ends_with(ent->d_name, ".png"))
+      file_capacity++;
+  }
+  rewinddir(dir);
+
+  char **filenames = malloc(file_capacity * sizeof(char *));
+  if (!filenames) {
+    fprintf(stderr, "Failed to allocate filename array\n");
+    closedir(dir);
+    return 1;
+  }
+
+  /* Second pass: collect filenames */
+  int nfiles = 0;
+  while ((ent = readdir(dir)) != NULL) {
+    if (ends_with(ent->d_name, ".pgm") || ends_with(ent->d_name, ".png"))
       filenames[nfiles++] = strdup(ent->d_name);
-    }
   }
   closedir(dir);
 
@@ -203,7 +222,7 @@ int main(void) {
 
   for (int i = 0; i < nfiles; i++) {
     char path[512];
-    snprintf(path, sizeof(path), "%s/%s", SAMPLES_DIR, filenames[i]);
+    snprintf(path, sizeof(path), "%s/%s", samples_dir, filenames[i]);
 
     int w, h;
     uint8_t *pixels = load_image(path, &w, &h);
@@ -247,17 +266,30 @@ int main(void) {
 
     if (decoded) {
       decoded_count++;
-      char payload_preview[PAYLOAD_DISPLAY_LEN + 4];
       int len = result.data.payload_len;
-      if (len > PAYLOAD_DISPLAY_LEN) {
-        memcpy(payload_preview, result.data.payload, PAYLOAD_DISPLAY_LEN);
-        strcpy(payload_preview + PAYLOAD_DISPLAY_LEN, "...");
+      if (hex_output) {
+        int display_len = len > PAYLOAD_DISPLAY_LEN ? PAYLOAD_DISPLAY_LEN : len;
+        char hex_buf[PAYLOAD_DISPLAY_LEN * 2 + 4];
+        for (int j = 0; j < display_len; j++)
+          sprintf(hex_buf + j * 2, "%02x", result.data.payload[j]);
+        if (len > PAYLOAD_DISPLAY_LEN)
+          strcpy(hex_buf + display_len * 2, "...");
+        else
+          hex_buf[display_len * 2] = '\0';
+        printf("%-28s  %-7s  %8.2f  %-6s %-6s  %-18s  %s\n", filenames[i],
+               "YES", ms, caps_str, grids_str, "", hex_buf);
       } else {
-        memcpy(payload_preview, result.data.payload, len);
-        payload_preview[len] = '\0';
+        char payload_preview[PAYLOAD_DISPLAY_LEN + 4];
+        if (len > PAYLOAD_DISPLAY_LEN) {
+          memcpy(payload_preview, result.data.payload, PAYLOAD_DISPLAY_LEN);
+          strcpy(payload_preview + PAYLOAD_DISPLAY_LEN, "...");
+        } else {
+          memcpy(payload_preview, result.data.payload, len);
+          payload_preview[len] = '\0';
+        }
+        printf("%-28s  %-7s  %8.2f  %-6s %-6s  %-18s  %s\n", filenames[i],
+               "YES", ms, caps_str, grids_str, "", payload_preview);
       }
-      printf("%-28s  %-7s  %8.2f  %-6s %-6s  %-18s  %s\n", filenames[i], "YES",
-             ms, caps_str, grids_str, "", payload_preview);
     } else {
       const char *err_str = "";
       if (grids == 0 && caps == 0)
@@ -314,6 +346,7 @@ int main(void) {
   }
 
   k_quirc_destroy(q);
+  free(filenames);
 
   printf("--------------------------------------------------------------"
          "----------------------------------------------\n");

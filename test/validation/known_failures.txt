@@ -1,0 +1,41 @@
+# Known decode failures at boundary conditions
+#
+# Each line is a filename base pattern (without _rN.png iteration suffix).
+# Any test case whose filename matches "pattern_r*.png" is treated as a
+# known failure: it won't cause CI to exit non-zero, but if it starts
+# passing, it will be flagged as a notable improvement.
+#
+# Format: v{VV}_{ECC}_{MODE}_{render}_{FRAME}x{FRAME}
+#   render = ppm{PP} | fill{FF}
+
+# --- v1 at PPM=3 (3 pixels per module is at the resolution floor) ---
+v01_L_alphanumeric_ppm03_320x320
+v01_L_alphanumeric_ppm03_480x480
+v01_L_alphanumeric_ppm03_640x640
+v01_L_byte_ppm03_320x320
+v01_L_byte_ppm03_480x480
+v01_L_byte_ppm03_640x640
+v01_L_numeric_ppm03_320x320
+v01_L_numeric_ppm03_480x480
+v01_L_numeric_ppm03_640x640
+
+# --- v25 at low computed PPM (large grids in small/medium frames) ---
+v25_M_byte_fill90_640x640
+v25_Q_alphanumeric_fill90_320x320
+v25_Q_alphanumeric_fill90_480x480
+v25_Q_alphanumeric_fill90_640x640
+v25_Q_alphanumeric_ppm03_480x480
+v25_Q_alphanumeric_ppm03_640x640
+v25_Q_alphanumeric_ppm05_640x640
+v25_Q_byte_fill90_320x320
+v25_Q_byte_fill90_480x480
+v25_Q_byte_fill90_640x640
+v25_Q_byte_ppm03_480x480
+v25_Q_byte_ppm03_640x640
+v25_Q_byte_ppm05_640x640
+v25_Q_numeric_fill90_320x320
+v25_Q_numeric_fill90_480x480
+v25_Q_numeric_fill90_640x640
+v25_Q_numeric_ppm03_480x480
+v25_Q_numeric_ppm03_640x640
+v25_Q_numeric_ppm05_640x640
