@@ -3,8 +3,10 @@
  * QR code detection: flood-fill, thresholding, capstone and grid detection
  */
 
+#ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#endif
 #include "k_quirc_internal.h"
 
 /*
@@ -1272,7 +1274,9 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
 
 #ifdef K_QUIRC_INVERTED_RETRY
   if (q->num_grids == 0 && find_inverted) {
+#ifdef ESP_PLATFORM
     vTaskDelay(1);
+#endif
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
     q->processing_inverted = true;
 #endif
