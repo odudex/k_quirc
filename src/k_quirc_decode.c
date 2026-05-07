@@ -3,10 +3,13 @@
  * Reed-Solomon error correction and QR code payload decoding
  */
 
+#ifdef ESP_PLATFORM
 #include "esp_log.h"
-#include "k_quirc_internal.h"
-
 static const char *TAG = "k_quirc";
+#else
+#define ESP_LOGW(tag, fmt, ...) ((void)0)
+#endif
+#include "k_quirc_internal.h"
 
 #define MAX_POLY 64
 
