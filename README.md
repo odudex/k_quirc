@@ -101,7 +101,7 @@ With it, a frame in which no dark-on-light code was located is searched a second
 ## Constraints
 
 - Maximum image size: 1280x1280 pixels
-- Maximum QR version: 27 (125x125 modules)
+- Maximum processed QR version: 21 (101x101 modules)
 - Maximum payload: 3,519 bytes (`K_QUIRC_MAX_PAYLOAD` less the terminating NUL), which the longest symbol, 3,517 digits, fits
 - Up to 8 codes per frame, from up to 32 finder patterns and 252 labelled regions (`QUIRC_MAX_REGIONS`)
 - Flood-fill stack: 8,192 entries, 64 KB (`QUIRC_FLOOD_FILL_STACK`); a region too convoluted for it is skipped

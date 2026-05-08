@@ -35,7 +35,8 @@
 #define K_QUIRC_WARN_UNUSED_RESULT
 #endif
 
-/* Limits on the maximum size of QR-codes and their content (Max Version 27).
+/* Buffer limits are sized for version 27, though processing is capped lower
+ * (see K_QUIRC_MAX_PROCESS_VERSION).
  *
  * The payload limit is set by numeric mode, which packs three digits into ten
  * bits: a version 27-L symbol holds 1,465 bytes but 3,517 digits. One more
