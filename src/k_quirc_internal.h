@@ -115,6 +115,9 @@ static inline void *k_malloc_fast(size_t size) {
 #define QUIRC_MAX_GRIDS 8
 #define QUIRC_PERSPECTIVE_PARAMS 8
 #define QUIRC_MAX_VERSION 27
+/* Krux/K210 cameras are unreliable above v21; reject larger grids early. */
+#define K_QUIRC_MAX_PROCESS_VERSION 21
+#define K_QUIRC_MAX_PROCESS_GRID_SIZE (K_QUIRC_MAX_PROCESS_VERSION * 4 + 17)
 #define QUIRC_MAX_ALIGNMENT 7
 /* Flood-fill span stack: entries are 8 bytes each (see xylf_t), so the
  * default costs 64 KB of fast RAM.  Override to trade memory for the

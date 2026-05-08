@@ -93,7 +93,7 @@ Feature flags are set as compile definitions in `CMakeLists.txt`:
 ## Constraints
 
 - Maximum image size: 1280x1280 pixels
-- Maximum QR version: 25 (117x117 modules)
+- Maximum processed QR version: 21 (101x101 modules)
 - Flood-fill stack: 8,192 entries
 
 ## License
