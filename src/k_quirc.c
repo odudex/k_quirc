@@ -13,10 +13,33 @@
 
 #include "k_quirc_internal.h"
 
+static int image_allocation_size(int w, int h, size_t elem_size,
+                                 size_t *out_size) {
+  if (!out_size || w <= 0 || h <= 0 || w > K_QUIRC_MAX_IMAGE_DIM ||
+      h > K_QUIRC_MAX_IMAGE_DIM)
+    return -1;
+
+  size_t width = (size_t)w;
+  size_t height = (size_t)h;
+  if (width > SIZE_MAX / height)
+    return -1;
+
+  size_t pixels = width * height;
+  if (elem_size && pixels > SIZE_MAX / elem_size)
+    return -1;
+
+  *out_size = pixels * elem_size;
+  return 0;
+}
+
 k_quirc_t *k_quirc_new(void) {
-  k_quirc_t *q = K_MALLOC(sizeof(*q));
-  if (q)
+  k_quirc_t *q = K_MALLOC_CONTEXT(sizeof(*q));
+  if (q) {
     memset(q, 0, sizeof(*q));
+#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
+    q->threshold_offset = k_quirc_get_threshold_offset();
+#endif
+  }
   return q;
 }
 
@@ -24,7 +47,7 @@ void k_quirc_destroy(k_quirc_t *q) {
   if (q) {
     if (q->image)
       K_FREE(q->image);
-    if (sizeof(*q->image) != sizeof(*q->pixels) && q->pixels)
+    if (q->owns_pixels && q->pixels)
       K_FREE(q->pixels);
     if (q->flood_fill_stack)
       K_FREE(q->flood_fill_stack);
@@ -33,38 +56,56 @@ void k_quirc_destroy(k_quirc_t *q) {
 }
 
 int k_quirc_resize(k_quirc_t *q, int w, int h) {
-  if (w <= 0 || h <= 0 || w > 1280 || h > 1280)
+  size_t image_size;
+  uint8_t *new_image;
+  quirc_pixel_t *new_pixels = NULL;
+  uint8_t *new_stack = NULL;
+
+  if (!q || image_allocation_size(w, h, sizeof(uint8_t), &image_size) < 0)
     return -1;
 
-  if (q->image)
-    K_FREE(q->image);
-
-  uint8_t *new_image = K_MALLOC(w * h);
+  new_image = K_MALLOC_IMAGE(image_size);
   if (!new_image)
     return -1;
 
   if (sizeof(*q->image) != sizeof(*q->pixels)) {
-    size_t new_size = w * h * sizeof(quirc_pixel_t);
-    if (q->pixels)
-      K_FREE(q->pixels);
-    quirc_pixel_t *new_pixels = K_MALLOC(new_size);
+    size_t pixel_size;
+    if (image_allocation_size(w, h, sizeof(quirc_pixel_t), &pixel_size) < 0) {
+      K_FREE(new_image);
+      return -1;
+    }
+    new_pixels = K_MALLOC_IMAGE(pixel_size);
     if (!new_pixels) {
       K_FREE(new_image);
       return -1;
     }
-    q->pixels = new_pixels;
   }
 
   if (!q->flood_fill_stack) {
-    /* Each flood-fill stack entry is {int16_t x, y, l, r} = 8 bytes */
-    q->flood_fill_stack = K_MALLOC(QUIRC_FLOOD_FILL_STACK * 8);
-    if (!q->flood_fill_stack) {
+    new_stack = K_MALLOC_SCRATCH(QUIRC_FLOOD_FILL_STACK * 8);
+    if (!new_stack) {
+      if (new_pixels)
+        K_FREE(new_pixels);
       K_FREE(new_image);
       return -1;
     }
   }
 
+  if (q->image)
+    K_FREE(q->image);
+  if (q->owns_pixels && q->pixels)
+    K_FREE(q->pixels);
+
   q->image = new_image;
+  if (sizeof(*q->image) == sizeof(*q->pixels)) {
+    q->pixels = (quirc_pixel_t *)q->image;
+    q->owns_pixels = false;
+  } else {
+    q->pixels = new_pixels;
+    q->owns_pixels = true;
+  }
+  if (new_stack)
+    q->flood_fill_stack = new_stack;
   q->w = w;
   q->h = h;
 
@@ -72,9 +113,18 @@ int k_quirc_resize(k_quirc_t *q, int w, int h) {
 }
 
 uint8_t *k_quirc_begin(k_quirc_t *q, int *w, int *h) {
+  if (!q || !q->image) {
+    if (w)
+      *w = 0;
+    if (h)
+      *h = 0;
+    return NULL;
+  }
+
   q->num_regions = QUIRC_PIXEL_REGION;
   q->num_capstones = 0;
   q->num_grids = 0;
+  q->flood_fill_overflow = false;
 
   if (w)
     *w = q->w;
@@ -85,36 +135,31 @@ uint8_t *k_quirc_begin(k_quirc_t *q, int *w, int *h) {
 }
 
 void k_quirc_end(k_quirc_t *q, bool find_inverted) {
+  if (!q || !q->image || !q->pixels || !q->flood_fill_stack)
+    return;
+
   k_quirc_identify(q, find_inverted);
 }
 
-int k_quirc_count(const k_quirc_t *q) { return q->num_grids; }
+int k_quirc_count(const k_quirc_t *q) { return q ? q->num_grids : 0; }
 
 k_quirc_error_t k_quirc_decode(k_quirc_t *q, int index,
                                k_quirc_result_t *result) {
-  memset(result, 0, sizeof(*result));
-
-  if (index < 0 || index >= q->num_grids)
+  if (!result)
     return K_QUIRC_ERROR_INVALID_GRID_SIZE;
 
-  struct quirc_code *code = K_MALLOC_FAST(sizeof(struct quirc_code));
-  if (!code)
-    code = K_MALLOC(sizeof(struct quirc_code));
-  struct quirc_data *data = K_MALLOC_FAST(sizeof(struct quirc_data));
-  if (!data)
-    data = K_MALLOC(sizeof(struct quirc_data));
+  memset(result, 0, sizeof(*result));
 
-  if (!code || !data) {
-    if (code)
-      K_FREE(code);
-    if (data)
-      K_FREE(data);
-    return K_QUIRC_ERROR_ALLOC_FAILED;
-  }
+  if (!q || index < 0 || index >= q->num_grids)
+    return K_QUIRC_ERROR_INVALID_GRID_SIZE;
+
+  struct quirc_code *code = &q->code_scratch;
+  struct quirc_data *data = &q->data_scratch;
+  struct datastream *ds = &q->ds_scratch;
 
   quirc_extract_internal(q, index, code);
 
-  k_quirc_error_t err = quirc_decode_internal(code, data);
+  k_quirc_error_t err = quirc_decode_internal(code, data, ds);
   if (err == K_QUIRC_SUCCESS) {
     result->valid = true;
     for (int i = 0; i < 4; i++) {
@@ -132,9 +177,6 @@ k_quirc_error_t k_quirc_decode(k_quirc_t *q, int index,
     memcpy(result->data.payload, data->payload, result->data.payload_len);
     result->data.payload[result->data.payload_len] = 0;
   }
-
-  K_FREE(code);
-  K_FREE(data);
 
   return err;
 }
@@ -160,6 +202,11 @@ const char *k_quirc_strerror(k_quirc_error_t err) {
 int k_quirc_decode_grayscale(const uint8_t *grayscale_data, int width,
                              int height, k_quirc_result_t *results,
                              int max_results, bool find_inverted) {
+  size_t image_size;
+  if (!grayscale_data || max_results <= 0 || !results ||
+      image_allocation_size(width, height, sizeof(uint8_t), &image_size) < 0)
+    return 0;
+
   k_quirc_t *q = k_quirc_new();
   if (!q)
     return 0;
@@ -170,7 +217,11 @@ int k_quirc_decode_grayscale(const uint8_t *grayscale_data, int width,
   }
 
   uint8_t *buf = k_quirc_begin(q, NULL, NULL);
-  memcpy(buf, grayscale_data, width * height);
+  if (!buf) {
+    k_quirc_destroy(q);
+    return 0;
+  }
+  memcpy(buf, grayscale_data, image_size);
 
   k_quirc_end(q, find_inverted);
 
@@ -214,7 +265,7 @@ const k_quirc_debug_info_t *k_quirc_get_debug_info(const k_quirc_t *q) {
     debug_info.capstones[i].y = q->capstones[i].center.y;
   }
 
-  debug_info.threshold_offset = k_quirc_get_threshold_offset();
+  debug_info.threshold_offset = k_quirc_get_threshold_offset_for(q);
 
   return &debug_info;
 }

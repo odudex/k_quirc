@@ -149,7 +149,7 @@ static uint8_t *load_image(const char *path, int *w, int *h) {
 static int try_decode(k_quirc_t *q, const uint8_t *pixels, int w, int h,
                       int thresh_offset, k_quirc_result_t *result,
                       k_quirc_error_t *out_err, int *out_caps, int *out_grids) {
-  k_quirc_set_threshold_offset(thresh_offset);
+  k_quirc_set_threshold_offset_for(q, thresh_offset);
 
   uint8_t *buf = k_quirc_begin(q, NULL, NULL);
   memcpy(buf, pixels, w * h);
@@ -260,7 +260,7 @@ int main(int argc, char **argv) {
     if (grids > 0)
       grid_size = q->grids[0].grid_size;
 
-    char caps_str[8], grids_str[8];
+    char caps_str[16], grids_str[16];
     snprintf(caps_str, sizeof(caps_str), "%d", caps);
     snprintf(grids_str, sizeof(grids_str), "%d", grids);
 

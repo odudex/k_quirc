@@ -18,11 +18,17 @@ typedef struct {
   xylf_t *data;
   size_t len;
   size_t capacity;
+  bool *overflow;
 } lifo_t;
 
-ALWAYS_INLINE void lifo_push(lifo_t *s, const xylf_t *item) {
-  if (s->len < s->capacity)
+ALWAYS_INLINE int lifo_push(lifo_t *s, const xylf_t *item) {
+  if (s->len < s->capacity) {
     s->data[s->len++] = *item;
+    return 1;
+  }
+  if (s->overflow)
+    *s->overflow = true;
+  return 0;
 }
 
 ALWAYS_INLINE void lifo_pop(lifo_t *s, xylf_t *item) {
@@ -52,8 +58,8 @@ static int line_intersect(const struct quirc_point *p0,
   return 1;
 }
 
-static void perspective_setup(float *c, const struct quirc_point *rect, float w,
-                              float h) {
+static int perspective_setup(float *c, const struct quirc_point *rect, float w,
+                             float h) {
   float x0 = rect[0].x;
   float y0 = rect[0].y;
   float x1 = rect[1].x;
@@ -65,6 +71,11 @@ static void perspective_setup(float *c, const struct quirc_point *rect, float w,
 
   float wden = w * (x2 * y3 - x3 * y2 + (x3 - x2) * y1 + x1 * (y2 - y3));
   float hden = h * (x2 * y3 + x1 * (y2 - y3) - x3 * y2 + (x3 - x2) * y1);
+
+  if (fabsf(wden) < 1e-6f || fabsf(hden) < 1e-6f) {
+    memset(c, 0, sizeof(float) * QUIRC_PERSPECTIVE_PARAMS);
+    return 0;
+  }
 
   c[0] = (x1 * (x2 * y3 - x3 * y2) +
           x0 * (-x2 * y3 + x3 * y2 + (x2 - x3) * y1) + x1 * (x3 - x2) * y0) /
@@ -85,9 +96,10 @@ static void perspective_setup(float *c, const struct quirc_point *rect, float w,
   c[7] = (-x2 * y3 + x1 * y3 + x3 * y2 + x0 * (y1 - y2) - x3 * y1 +
           (x2 - x1) * y0) /
          hden;
+  return 1;
 }
 
-static void solve_8x8_system(float A[8][8], float b[8], float x[8]) {
+static int solve_8x8_system(float A[8][8], float b[8], float x[8]) {
   for (int k = 0; k < 8; k++) {
     int max_row = k;
     float max_val = fabsf(A[k][k]);
@@ -113,7 +125,7 @@ static void solve_8x8_system(float A[8][8], float b[8], float x[8]) {
     if (fabsf(pivot) < 1e-10f) {
       for (int i = 0; i < 8; i++)
         x[i] = 0.0f;
-      return;
+      return 0;
     }
 
     for (int i = k + 1; i < 8; i++) {
@@ -132,10 +144,11 @@ static void solve_8x8_system(float A[8][8], float b[8], float x[8]) {
     }
     x[i] /= A[i][i];
   }
+  return 1;
 }
 
-static void perspective_setup_direct(float *c, const float img[4][2],
-                                     const float mod[4][2]) {
+static int perspective_setup_direct(float *c, const float img[4][2],
+                                    const float mod[4][2]) {
   float A[8][8];
   float b[8];
 
@@ -165,15 +178,18 @@ static void perspective_setup_direct(float *c, const float img[4][2],
     b[row2] = y;
   }
 
-  solve_8x8_system(A, b, c);
+  return solve_8x8_system(A, b, c);
 }
 
-static void perspective_unmap(const float *c, const struct quirc_point *in,
-                              float *u, float *v) {
+static int perspective_unmap(const float *c, const struct quirc_point *in,
+                             float *u, float *v) {
   float x = in->x;
   float y = in->y;
   float den = -c[0] * c[7] * y + c[1] * c[6] * y +
               (c[3] * c[7] - c[4] * c[6]) * x + c[0] * c[4] - c[1] * c[3];
+
+  if (fabsf(den) < 1e-6f)
+    return 0;
 
   *u = -(c[1] * (y - c[5]) - c[2] * c[7] * y + (c[5] * c[7] - c[4]) * x +
          c[2] * c[4]) /
@@ -181,6 +197,7 @@ static void perspective_unmap(const float *c, const struct quirc_point *in,
   *v = (c[0] * (y - c[5]) - c[2] * c[6] * y + (c[5] * c[6] - c[3]) * x +
         c[2] * c[3]) /
        den;
+  return 1;
 }
 
 /*
@@ -198,6 +215,7 @@ static void flood_fill_seed(struct k_quirc *q, int x, int y,
   lifo.data = (xylf_t *)q->flood_fill_stack;
   lifo.len = 0;
   lifo.capacity = QUIRC_FLOOD_FILL_STACK;
+  lifo.overflow = &q->flood_fill_overflow;
 
   for (;;) {
     int left = x;
@@ -226,7 +244,8 @@ static void flood_fill_seed(struct k_quirc *q, int x, int y,
             if (row[i] == from_color) {
               xylf_t context = {(int16_t)x, (int16_t)y, (int16_t)left,
                                 (int16_t)right};
-              lifo_push(&lifo, &context);
+              if (!lifo_push(&lifo, &context))
+                return;
               x = i;
               y = y - 1;
               recurse = true;
@@ -241,7 +260,8 @@ static void flood_fill_seed(struct k_quirc *q, int x, int y,
             if (row[i] == from_color) {
               xylf_t context = {(int16_t)x, (int16_t)y, (int16_t)left,
                                 (int16_t)right};
-              lifo_push(&lifo, &context);
+              if (!lifo_push(&lifo, &context))
+                return;
               x = i;
               y = y + 1;
               recurse = true;
@@ -311,9 +331,7 @@ static uint8_t otsu_threshold(uint32_t *histogram, uint32_t total) {
 #define K_QUIRC_THRESHOLD_MARGIN 0.2f
 
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-#define THRESHOLD_OFFSET_MAX 20
-static int threshold_offset = 10;
-static bool processing_inverted = false;
+static int default_threshold_offset = K_QUIRC_THRESHOLD_OFFSET_DEFAULT;
 #endif
 
 static inline int clamp_threshold(int t) {
@@ -361,14 +379,14 @@ static void threshold(struct k_quirc *q, bool inverted) {
 
   uint32_t quad_pixels = (uint32_t)half_w * half_h;
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-  int t_tl =
-      clamp_threshold(otsu_threshold(hist_tl, quad_pixels) + threshold_offset);
-  int t_tr =
-      clamp_threshold(otsu_threshold(hist_tr, quad_pixels) + threshold_offset);
-  int t_bl =
-      clamp_threshold(otsu_threshold(hist_bl, quad_pixels) + threshold_offset);
-  int t_br =
-      clamp_threshold(otsu_threshold(hist_br, quad_pixels) + threshold_offset);
+  int t_tl = clamp_threshold(otsu_threshold(hist_tl, quad_pixels) +
+                             q->threshold_offset);
+  int t_tr = clamp_threshold(otsu_threshold(hist_tr, quad_pixels) +
+                             q->threshold_offset);
+  int t_bl = clamp_threshold(otsu_threshold(hist_bl, quad_pixels) +
+                             q->threshold_offset);
+  int t_br = clamp_threshold(otsu_threshold(hist_br, quad_pixels) +
+                             q->threshold_offset);
 #else
   int t_tl = otsu_threshold(hist_tl, quad_pixels);
   int t_tr = otsu_threshold(hist_tr, quad_pixels);
@@ -431,7 +449,7 @@ static void threshold(struct k_quirc *q, bool inverted) {
 
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
   uint8_t t = clamp_threshold(otsu_threshold(histogram, sampled_pixels) +
-                              threshold_offset);
+                              q->threshold_offset);
 #else
   uint8_t t = otsu_threshold(histogram, sampled_pixels);
 #endif
@@ -477,7 +495,13 @@ static int region_code(struct k_quirc *q, int x, int y) {
   box->seed.y = y;
   box->capstone = -1;
 
+  q->flood_fill_overflow = false;
   flood_fill_seed(q, x, y, pixel, region, area_count, box, 0);
+  if (q->flood_fill_overflow) {
+    box->count = 0;
+    box->capstone = -1;
+    return -1;
+  }
 
   return region;
 }
@@ -535,8 +559,11 @@ static void find_region_corners(struct k_quirc *q, int rcode,
 
   memcpy(&psd.ref, ref, sizeof(psd.ref));
   psd.scores[0] = -1;
+  q->flood_fill_overflow = false;
   flood_fill_seed(q, region->seed.x, region->seed.y, rcode, QUIRC_PIXEL_BLACK,
                   find_one_corner, &psd, 0);
+  if (q->flood_fill_overflow)
+    return;
 
   psd.ref.x = psd.corners[0].x - psd.ref.x;
   psd.ref.y = psd.corners[0].y - psd.ref.y;
@@ -576,7 +603,13 @@ static void record_capstone(struct k_quirc *q, int ring, int stone) {
   ring_reg->capstone = cs_index;
 
   find_region_corners(q, ring, &stone_reg->seed, capstone->corners);
-  perspective_setup(capstone->c, capstone->corners, 7.0f, 7.0f);
+  if (q->flood_fill_overflow ||
+      !perspective_setup(capstone->c, capstone->corners, 7.0f, 7.0f)) {
+    stone_reg->capstone = -1;
+    ring_reg->capstone = -1;
+    q->num_capstones = cs_index;
+    return;
+  }
   perspective_map(capstone->c, 3.5f, 3.5f, &capstone->center);
 }
 
@@ -604,6 +637,9 @@ static void test_capstone(struct k_quirc *q, int x, int y, int *pb) {
   struct quirc_region *ring_reg = &q->regions[ring_left];
 
   if (stone_reg->capstone >= 0 || ring_reg->capstone >= 0)
+    return;
+
+  if (ring_reg->count <= 0)
     return;
 
   int ratio = stone_reg->count * 100 / ring_reg->count;
@@ -673,9 +709,11 @@ static void find_alignment_pattern(struct k_quirc *q, int index) {
 
   memcpy(&b, &qr->align, sizeof(b));
 
-  perspective_unmap(c0->c, &b, &u, &v);
+  if (!perspective_unmap(c0->c, &b, &u, &v))
+    return;
   perspective_map(c0->c, u, v + 1.0f, &a);
-  perspective_unmap(c2->c, &b, &u, &v);
+  if (!perspective_unmap(c2->c, &b, &u, &v))
+    return;
   perspective_map(c2->c, u + 1.0f, v, &c);
 
   size_estimate = abs((a.x - b.x) * -(c.y - b.y) + (a.y - b.y) * (c.x - b.x));
@@ -761,7 +799,6 @@ static int fitness_capstone(const struct k_quirc *q, int index, int x, int y) {
 static int fitness_all(const struct k_quirc *q, int index) {
   const struct quirc_grid *qr = &q->grids[index];
   int version = (qr->grid_size - 17) / 4;
-  const struct quirc_version_info *info = &quirc_version_db[version];
   int score = 0;
   int ap_count;
 
@@ -778,6 +815,7 @@ static int fitness_all(const struct k_quirc *q, int index) {
   if (version < 0 || version > QUIRC_MAX_VERSION)
     return score;
 
+  const struct quirc_version_info *info = &quirc_version_db[version];
   ap_count = 0;
   while ((ap_count < QUIRC_MAX_ALIGNMENT) && info->apat[ap_count])
     ap_count++;
@@ -818,29 +856,45 @@ static int timing_bias(const struct k_quirc *q, int index) {
   return bias;
 }
 
-static void update_threshold_offset(int bias) {
-  if (bias > 0)
-    threshold_offset++;
-  else if (bias < 0)
-    threshold_offset--;
-
-  if (threshold_offset > THRESHOLD_OFFSET_MAX)
-    threshold_offset = THRESHOLD_OFFSET_MAX;
-  else if (threshold_offset < -THRESHOLD_OFFSET_MAX)
-    threshold_offset = -THRESHOLD_OFFSET_MAX;
+static int clamp_threshold_offset(int offset) {
+  if (offset > K_QUIRC_THRESHOLD_OFFSET_MAX)
+    return K_QUIRC_THRESHOLD_OFFSET_MAX;
+  if (offset < -K_QUIRC_THRESHOLD_OFFSET_MAX)
+    return -K_QUIRC_THRESHOLD_OFFSET_MAX;
+  return offset;
 }
 
-int k_quirc_get_threshold_offset(void) { return threshold_offset; }
+static void update_threshold_offset(struct k_quirc *q, int bias) {
+  if (bias > 0)
+    q->threshold_offset++;
+  else if (bias < 0)
+    q->threshold_offset--;
+
+  q->threshold_offset = clamp_threshold_offset(q->threshold_offset);
+}
+
+int k_quirc_get_threshold_offset(void) { return default_threshold_offset; }
 void k_quirc_set_threshold_offset(int offset) {
-  if (offset > THRESHOLD_OFFSET_MAX)
-    offset = THRESHOLD_OFFSET_MAX;
-  else if (offset < -THRESHOLD_OFFSET_MAX)
-    offset = -THRESHOLD_OFFSET_MAX;
-  threshold_offset = offset;
+  default_threshold_offset = clamp_threshold_offset(offset);
+}
+int k_quirc_get_threshold_offset_for(const struct k_quirc *q) {
+  return q ? q->threshold_offset : default_threshold_offset;
+}
+void k_quirc_set_threshold_offset_for(struct k_quirc *q, int offset) {
+  if (q)
+    q->threshold_offset = clamp_threshold_offset(offset);
 }
 #else
 int k_quirc_get_threshold_offset(void) { return 0; }
 void k_quirc_set_threshold_offset(int offset) { (void)offset; }
+int k_quirc_get_threshold_offset_for(const struct k_quirc *q) {
+  (void)q;
+  return 0;
+}
+void k_quirc_set_threshold_offset_for(struct k_quirc *q, int offset) {
+  (void)q;
+  (void)offset;
+}
 #endif
 
 #define JIGGLE_PASSES 2
@@ -875,7 +929,7 @@ static void jiggle_perspective(struct k_quirc *q, int index) {
   }
 }
 
-static void setup_qr_perspective(struct k_quirc *q, int index) {
+static int setup_qr_perspective(struct k_quirc *q, int index) {
   struct quirc_grid *qr = &q->grids[index];
   float gs = (float)qr->grid_size;
 
@@ -898,14 +952,17 @@ static void setup_qr_perspective(struct k_quirc *q, int index) {
     mod[2][1] = gs - 7.0f;
   }
 
-  perspective_setup_direct(qr->c, img, mod);
+  if (!perspective_setup_direct(qr->c, img, mod))
+    return 0;
+
   jiggle_perspective(q, index);
 
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
   qr->timing_bias = timing_bias(q, index);
-  if (!processing_inverted)
-    update_threshold_offset(qr->timing_bias);
+  if (!q->processing_inverted)
+    update_threshold_offset(q, qr->timing_bias);
 #endif
+  return 1;
 }
 
 static float length(struct quirc_point a, struct quirc_point b) {
@@ -942,10 +999,11 @@ static void measure_grid_size(struct k_quirc *q, int index) {
   qr->grid_size = 4 * ver + 17;
 }
 
-static void rotate_capstone(struct quirc_capstone *cap,
-                            const struct quirc_point *h0,
-                            const struct quirc_point *hd) {
+static int rotate_capstone(struct quirc_capstone *cap,
+                           const struct quirc_point *h0,
+                           const struct quirc_point *hd) {
   struct quirc_point copy[4];
+  float c[QUIRC_PERSPECTIVE_PARAMS];
   int best = 0;
   int best_score = 0;
 
@@ -961,8 +1019,12 @@ static void rotate_capstone(struct quirc_capstone *cap,
 
   for (int j = 0; j < 4; j++)
     memcpy(&copy[j], &cap->corners[(j + best) % 4], sizeof(copy[j]));
+  if (!perspective_setup(c, copy, 7.0f, 7.0f))
+    return 0;
+
   memcpy(cap->corners, copy, sizeof(cap->corners));
-  perspective_setup(cap->c, cap->corners, 7.0f, 7.0f);
+  memcpy(cap->c, c, sizeof(c));
+  return 1;
 }
 
 static void record_qr_grid(struct k_quirc *q, int a, int b, int c) {
@@ -995,8 +1057,8 @@ static void record_qr_grid(struct k_quirc *q, int a, int b, int c) {
 
   for (int i = 0; i < 3; i++) {
     struct quirc_capstone *cap = &q->capstones[qr->caps[i]];
-    rotate_capstone(cap, &h0, &hd);
-    cap->qr_grid = q->num_grids;
+    if (!rotate_capstone(cap, &h0, &hd))
+      return;
   }
 
   measure_grid_size(q, q->num_grids);
@@ -1007,9 +1069,11 @@ static void record_qr_grid(struct k_quirc *q, int a, int b, int c) {
   if (qr->grid_size > 177)
     return;
 
-  line_intersect(&q->capstones[a].corners[0], &q->capstones[a].corners[1],
-                 &q->capstones[c].corners[0], &q->capstones[c].corners[3],
-                 &qr->align);
+  if (!line_intersect(&q->capstones[a].corners[0],
+                      &q->capstones[a].corners[1],
+                      &q->capstones[c].corners[0],
+                      &q->capstones[c].corners[3], &qr->align))
+    return;
 
   if (qr->grid_size > 21) {
     find_alignment_pattern(q, q->num_grids);
@@ -1053,7 +1117,12 @@ static void record_qr_grid(struct k_quirc *q, int a, int b, int c) {
     }
   }
 
-  setup_qr_perspective(q, q->num_grids);
+  if (!setup_qr_perspective(q, q->num_grids))
+    return;
+
+  for (int i = 0; i < 3; i++)
+    q->capstones[qr->caps[i]].qr_grid = q->num_grids;
+
   q->num_grids++;
 }
 
@@ -1188,8 +1257,11 @@ static void pixels_setup(struct k_quirc *q) {
  * Public identification function
  */
 void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
+  if (!q)
+    return;
+
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-  processing_inverted = false;
+  q->processing_inverted = false;
 #endif
   pixels_setup(q);
   threshold(q, false);
@@ -1203,7 +1275,7 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
   if (q->num_grids == 0 && find_inverted) {
     vTaskDelay(1);
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-    processing_inverted = true;
+    q->processing_inverted = true;
 #endif
     q->num_regions = QUIRC_PIXEL_REGION;
     q->num_capstones = 0;

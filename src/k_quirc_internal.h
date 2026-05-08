@@ -15,15 +15,33 @@
 
 #ifdef ESP_PLATFORM
 #include <esp_heap_caps.h>
-#define K_MALLOC(size)                                                         \
-  heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT |                 \
-                             MALLOC_CAP_CACHE_ALIGNED)
-#define K_MALLOC_FAST(size)                                                    \
-  heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+static inline void *k_malloc_large(size_t size) {
+  void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT |
+                                        MALLOC_CAP_CACHE_ALIGNED);
+  if (!ptr)
+    ptr = heap_caps_malloc(size, MALLOC_CAP_8BIT);
+  return ptr;
+}
+
+static inline void *k_malloc_fast(size_t size) {
+  void *ptr = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!ptr)
+    ptr = k_malloc_large(size);
+  return ptr;
+}
+
+#define K_MALLOC(size) k_malloc_large(size)
+#define K_MALLOC_FAST(size) k_malloc_fast(size)
+#define K_MALLOC_CONTEXT(size) k_malloc_fast(size)
+#define K_MALLOC_IMAGE(size) k_malloc_large(size)
+#define K_MALLOC_SCRATCH(size) k_malloc_fast(size)
 #define K_FREE(ptr) heap_caps_free(ptr)
 #else
 #define K_MALLOC(size) malloc(size)
 #define K_MALLOC_FAST(size) malloc(size)
+#define K_MALLOC_CONTEXT(size) malloc(size)
+#define K_MALLOC_IMAGE(size) malloc(size)
+#define K_MALLOC_SCRATCH(size) malloc(size)
 #define K_FREE(ptr) free(ptr)
 #endif
 
@@ -52,6 +70,9 @@
 #define QUIRC_MAX_VERSION 25
 #define QUIRC_MAX_ALIGNMENT 7
 #define QUIRC_FLOOD_FILL_STACK 8192
+#define K_QUIRC_MAX_IMAGE_DIM 1280
+#define K_QUIRC_THRESHOLD_OFFSET_DEFAULT 10
+#define K_QUIRC_THRESHOLD_OFFSET_MAX 20
 
 #if QUIRC_MAX_REGIONS < UINT8_MAX
 typedef uint8_t quirc_pixel_t;
@@ -109,10 +130,23 @@ struct quirc_data {
   uint32_t eci;
 };
 
+struct datastream {
+  uint8_t raw[K_QUIRC_MAX_PAYLOAD];
+  int data_bits;
+  int ptr;
+  uint8_t data[K_QUIRC_MAX_PAYLOAD];
+};
+
 struct k_quirc {
   uint8_t *image;
   quirc_pixel_t *pixels;
   uint8_t *flood_fill_stack;
+  bool owns_pixels;
+  bool flood_fill_overflow;
+#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
+  int threshold_offset;
+  bool processing_inverted;
+#endif
   int w;
   int h;
   int num_regions;
@@ -121,6 +155,9 @@ struct k_quirc {
   struct quirc_capstone capstones[QUIRC_MAX_CAPSTONES];
   int num_grids;
   struct quirc_grid grids[QUIRC_MAX_GRIDS];
+  struct quirc_code code_scratch;
+  struct quirc_data data_scratch;
+  struct datastream ds_scratch;
 };
 
 /*
@@ -163,6 +200,8 @@ ALWAYS_INLINE void perspective_map(const float *c, float u, float v,
 void k_quirc_identify(struct k_quirc *q, bool find_inverted);
 int k_quirc_get_threshold_offset(void);
 void k_quirc_set_threshold_offset(int offset);
+int k_quirc_get_threshold_offset_for(const struct k_quirc *q);
+void k_quirc_set_threshold_offset_for(struct k_quirc *q, int offset);
 
 /*
  * Decode module functions (k_quirc_decode.c)
@@ -170,6 +209,7 @@ void k_quirc_set_threshold_offset(int offset);
 void quirc_extract_internal(const struct k_quirc *q, int index,
                             struct quirc_code *code);
 k_quirc_error_t quirc_decode_internal(const struct quirc_code *code,
-                                      struct quirc_data *data);
+                                      struct quirc_data *data,
+                                      struct datastream *ds);
 
 #endif /* K_QUIRC_INTERNAL_H */

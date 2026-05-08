@@ -300,16 +300,6 @@ static k_quirc_error_t correct_format(uint16_t *f_ret) {
   return K_QUIRC_SUCCESS;
 }
 
-/*
- * Datastream handling
- */
-struct datastream {
-  uint8_t raw[K_QUIRC_MAX_PAYLOAD];
-  int data_bits;
-  int ptr;
-  uint8_t data[K_QUIRC_MAX_PAYLOAD];
-};
-
 static inline int grid_bit(const struct quirc_code *code, int x, int y) {
   int p = y * code->size + x;
   return (code->cell_bitmap[p >> 3] >> (p & 7)) & 1;
@@ -439,8 +429,9 @@ static void build_reserved_bitmap(int version, int size, uint8_t *bitmap) {
   }
 }
 
-static void read_data(const struct quirc_code *code, struct quirc_data *data,
-                      struct datastream *ds) {
+static k_quirc_error_t read_data(const struct quirc_code *code,
+                                 struct quirc_data *data,
+                                 struct datastream *ds) {
   int y = code->size - 1;
   int x = code->size - 1;
   int dir = -1;
@@ -449,7 +440,7 @@ static void read_data(const struct quirc_code *code, struct quirc_data *data,
   /* Verify bitmap fits: (size*size+7)/8 must fit in K_QUIRC_MAX_BITMAP */
   if (code->size <= 0 ||
       (size_t)((code->size * code->size + 7) >> 3) > K_QUIRC_MAX_BITMAP)
-    return;
+    return K_QUIRC_ERROR_INVALID_GRID_SIZE;
 
   build_reserved_bitmap(data->version, code->size, reserved);
 
@@ -471,6 +462,8 @@ static void read_data(const struct quirc_code *code, struct quirc_data *data,
       y += dir;
     }
   }
+
+  return K_QUIRC_SUCCESS;
 }
 
 static k_quirc_error_t codestream_ecc(struct quirc_data *data,
@@ -761,19 +754,15 @@ done:
  * Public decode functions
  */
 k_quirc_error_t quirc_decode_internal(const struct quirc_code *code,
-                                      struct quirc_data *data) {
+                                      struct quirc_data *data,
+                                      struct datastream *ds) {
   k_quirc_error_t err;
-  struct datastream *ds;
 
-  if ((code->size - 17) % 4)
-    return K_QUIRC_ERROR_INVALID_GRID_SIZE;
-
-  ds = K_MALLOC_FAST(sizeof(*ds));
-  if (!ds) {
-    ds = K_MALLOC(sizeof(*ds));
-  }
-  if (!ds)
+  if (!code || !data || !ds)
     return K_QUIRC_ERROR_ALLOC_FAILED;
+
+  if (code->size <= 0 || (code->size - 17) % 4)
+    return K_QUIRC_ERROR_INVALID_GRID_SIZE;
 
   memset(ds, 0, sizeof(*ds));
   memset(data, 0, sizeof(*data));
@@ -781,28 +770,25 @@ k_quirc_error_t quirc_decode_internal(const struct quirc_code *code,
   data->version = (code->size - 17) / 4;
 
   if (data->version < 1 || data->version > QUIRC_MAX_VERSION) {
-    K_FREE(ds);
     return K_QUIRC_ERROR_INVALID_VERSION;
   }
 
   err = read_format(code, data, 0);
   if (err) {
     err = read_format(code, data, 1);
-    if (err) {
-      K_FREE(ds);
+    if (err)
       return err;
-    }
   }
 
-  read_data(code, data, ds);
-  err = codestream_ecc(data, ds);
-  if (err) {
-    K_FREE(ds);
+  err = read_data(code, data, ds);
+  if (err)
     return err;
-  }
+
+  err = codestream_ecc(data, ds);
+  if (err)
+    return err;
 
   err = decode_payload(data, ds);
-  K_FREE(ds);
   return err;
 }
 
@@ -817,8 +803,8 @@ void quirc_extract_internal(const struct k_quirc *q, int index,
   memset(code, 0, sizeof(*code));
 
   /* Bounds check to prevent buffer overflow in cell_bitmap */
-  if (qr->grid_size > max_grid_size) {
-    ESP_LOGW(TAG, "Grid size %d exceeds max %d, skipping extraction",
+  if (qr->grid_size < 21 || qr->grid_size > max_grid_size) {
+    ESP_LOGW(TAG, "Grid size %d outside supported range 21..%d",
              qr->grid_size, max_grid_size);
     code->size = 0;
     return;
