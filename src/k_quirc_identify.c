@@ -1069,10 +1069,9 @@ static void record_qr_grid(struct k_quirc *q, int a, int b, int c) {
   if (qr->grid_size > 177)
     return;
 
-  if (!line_intersect(&q->capstones[a].corners[0],
-                      &q->capstones[a].corners[1],
-                      &q->capstones[c].corners[0],
-                      &q->capstones[c].corners[3], &qr->align))
+  if (!line_intersect(&q->capstones[a].corners[0], &q->capstones[a].corners[1],
+                      &q->capstones[c].corners[0], &q->capstones[c].corners[3],
+                      &qr->align))
     return;
 
   if (qr->grid_size > 21) {

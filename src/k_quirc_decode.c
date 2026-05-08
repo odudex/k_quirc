@@ -804,8 +804,8 @@ void quirc_extract_internal(const struct k_quirc *q, int index,
 
   /* Bounds check to prevent buffer overflow in cell_bitmap */
   if (qr->grid_size < 21 || qr->grid_size > max_grid_size) {
-    ESP_LOGW(TAG, "Grid size %d outside supported range 21..%d",
-             qr->grid_size, max_grid_size);
+    ESP_LOGW(TAG, "Grid size %d outside supported range 21..%d", qr->grid_size,
+             max_grid_size);
     code->size = 0;
     return;
   }

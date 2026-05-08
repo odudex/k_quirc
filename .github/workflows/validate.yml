@@ -41,8 +41,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get install -y qrencode
+          sudo apt-get install -y clang-format qrencode
           pip install -r test/validation/requirements.txt
+
+      - name: Check formatting
+        run: ./scripts/format.sh check
 
       - name: Build test harness
         run: |

@@ -17,7 +17,7 @@
 #include <esp_heap_caps.h>
 static inline void *k_malloc_large(size_t size) {
   void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT |
-                                        MALLOC_CAP_CACHE_ALIGNED);
+                                         MALLOC_CAP_CACHE_ALIGNED);
   if (!ptr)
     ptr = heap_caps_malloc(size, MALLOC_CAP_8BIT);
   return ptr;
