@@ -360,13 +360,22 @@ static int mask_bit(int mask, int i, int j) {
   return 0;
 }
 
-static void read_bit(const struct quirc_code *code, struct quirc_data *data,
+/* All eight mask predicates are periodic in i and j with a period dividing
+ * 12 (they only use i%2, i%3, (i/2)%2, (j/3)%2 and products thereof), so a
+ * 12x12 lookup table built once per decode replaces the per-bit divisions. */
+static void build_mask_table(int mask, uint8_t tab[12][12]) {
+  for (int i = 0; i < 12; i++)
+    for (int j = 0; j < 12; j++)
+      tab[i][j] = (uint8_t)mask_bit(mask, i, j);
+}
+
+static void read_bit(const struct quirc_code *code, const uint8_t mtab[12][12],
                      struct datastream *ds, int i, int j) {
   int bitpos = ds->data_bits & 7;
   int bytepos = ds->data_bits >> 3;
   int v = grid_bit(code, j, i);
 
-  if (mask_bit(data->mask, i, j))
+  if (mtab[i % 12][j % 12])
     v ^= 1;
 
   if (v)
@@ -375,56 +384,46 @@ static void read_bit(const struct quirc_code *code, struct quirc_data *data,
   ds->data_bits++;
 }
 
+static void reserve_rect(uint8_t *bitmap, int size, int x0, int y0, int rw,
+                         int rh) {
+  for (int y = y0; y < y0 + rh; y++) {
+    int bit = y * size + x0;
+    for (int x = 0; x < rw; x++, bit++)
+      bitmap[bit >> 3] |= (1 << (bit & 7));
+  }
+}
+
 static void build_reserved_bitmap(int version, int size, uint8_t *bitmap) {
   memset(bitmap, 0, (size * size + 7) >> 3);
   const struct quirc_version_info *ver = &quirc_version_db[version];
 
-  for (int j = 0; j < size; j++) {
-    for (int i = 0; i < size; i++) {
-      bool reserved = false;
+  /* Finder patterns + format info areas */
+  reserve_rect(bitmap, size, 0, 0, 9, 9);
+  reserve_rect(bitmap, size, size - 8, 0, 8, 9);
+  reserve_rect(bitmap, size, 0, size - 8, 9, 8);
 
-      if (i < 9 && j < 9)
-        reserved = true;
-      else if (i < 9 && j >= size - 8)
-        reserved = true;
-      else if (i >= size - 8 && j < 9)
-        reserved = true;
-      else if (i == 6 || j == 6)
-        reserved = true;
+  /* Timing patterns */
+  reserve_rect(bitmap, size, 6, 0, 1, size);
+  reserve_rect(bitmap, size, 0, 6, size, 1);
 
-      if (!reserved && version >= 7) {
-        if (i < 6 && j >= size - 11)
-          reserved = true;
-        else if (i >= size - 11 && j < 6)
-          reserved = true;
-      }
+  /* Version info blocks */
+  if (version >= 7) {
+    reserve_rect(bitmap, size, 0, size - 11, 6, 3);
+    reserve_rect(bitmap, size, size - 11, 0, 3, 6);
+  }
 
-      if (!reserved) {
-        int a = 0;
-        while (a < QUIRC_MAX_ALIGNMENT && ver->apat[a])
-          a++;
+  /* Alignment patterns: 5x5 around each center, skipping the three
+   * combinations that coincide with the finder patterns */
+  int a = 0;
+  while (a < QUIRC_MAX_ALIGNMENT && ver->apat[a])
+    a++;
 
-        if (a) {
-          int ai = -1, aj = -1;
-          for (int p = 0; p < a; p++) {
-            if (abs(ver->apat[p] - i) < 3)
-              ai = p;
-            if (abs(ver->apat[p] - j) < 3)
-              aj = p;
-          }
-
-          if (ai >= 0 && aj >= 0) {
-            if (!((ai == 0 && aj == 0) || (ai == 0 && aj == a - 1) ||
-                  (ai == a - 1 && aj == 0)))
-              reserved = true;
-          }
-        }
-      }
-
-      if (reserved) {
-        int bit = j * size + i;
-        bitmap[bit >> 3] |= (1 << (bit & 7));
-      }
+  for (int p = 0; p < a; p++) {
+    for (int r = 0; r < a; r++) {
+      if ((p == 0 && r == 0) || (p == 0 && r == a - 1) ||
+          (p == a - 1 && r == 0))
+        continue;
+      reserve_rect(bitmap, size, ver->apat[p] - 2, ver->apat[r] - 2, 5, 5);
     }
   }
 }
@@ -436,6 +435,7 @@ static k_quirc_error_t read_data(const struct quirc_code *code,
   int x = code->size - 1;
   int dir = -1;
   uint8_t reserved[K_QUIRC_MAX_BITMAP];
+  uint8_t mtab[12][12];
 
   /* Verify bitmap fits: (size*size+7)/8 must fit in K_QUIRC_MAX_BITMAP */
   if (code->size <= 0 ||
@@ -443,6 +443,7 @@ static k_quirc_error_t read_data(const struct quirc_code *code,
     return K_QUIRC_ERROR_INVALID_GRID_SIZE;
 
   build_reserved_bitmap(data->version, code->size, reserved);
+  build_mask_table(data->mask, mtab);
 
   while (x > 0) {
     if (x == 6)
@@ -450,10 +451,10 @@ static k_quirc_error_t read_data(const struct quirc_code *code,
 
     int bit0 = y * code->size + x;
     if (!((reserved[bit0 >> 3] >> (bit0 & 7)) & 1))
-      read_bit(code, data, ds, y, x);
+      read_bit(code, mtab, ds, y, x);
     int bit1 = y * code->size + x - 1;
     if (!((reserved[bit1 >> 3] >> (bit1 & 7)) & 1))
-      read_bit(code, data, ds, y, x - 1);
+      read_bit(code, mtab, ds, y, x - 1);
 
     y += dir;
     if (y < 0 || y >= code->size) {
@@ -817,15 +818,23 @@ void quirc_extract_internal(const struct k_quirc *q, int index,
 
   code->size = qr->grid_size;
 
+  const float *c = qr->c;
   int i = 0;
   for (int y = 0; y < qr->grid_size; y++) {
+    /* Hoist the v-dependent terms of the perspective map out of the row */
+    float vy = y + 0.5f;
+    float den_v = c[7] * vy + 1.0f;
+    float nx_v = c[1] * vy + c[2];
+    float ny_v = c[4] * vy + c[5];
+
     for (int x = 0; x < qr->grid_size; x++) {
-      struct quirc_point p;
+      float ux = x + 0.5f;
+      float inv = 1.0f / (c[6] * ux + den_v);
+      int px = fast_roundf((c[0] * ux + nx_v) * inv);
+      int py = fast_roundf((c[3] * ux + ny_v) * inv);
 
-      perspective_map(qr->c, x + 0.5f, y + 0.5f, &p);
-
-      if (p.y >= 0 && p.y < q->h && p.x >= 0 && p.x < q->w) {
-        if (q->pixels[p.y * q->w + p.x])
+      if (py >= 0 && py < q->h && px >= 0 && px < q->w) {
+        if (q->pixels[py * q->w + px])
           code->cell_bitmap[i >> 3] |= (1 << (i & 7));
       }
 

@@ -15,7 +15,10 @@ A standalone QR code recognition and decoding library optimized for embedded sys
 
 - **Bilinear thresholding** -- 4-quadrant Otsu with fixed-point 16.16 interpolation handles uneven lighting
 - **Adaptive threshold** -- auto-adjusts offset from timing pattern analysis for improved reliability
-- **Span-based flood fill** -- line-based fill with explicit stack avoids recursion
+- **Span-based flood fill** -- line-based fill with explicit stack avoids recursion; neighbor-row scans resume where they stopped instead of rescanning from the span edge
+- **Constant-threshold binarization spans** -- the interpolated row threshold is decomposed into exact constant spans, so the per-pixel loop is branch-free and SIMD-friendly
+- **Word-at-a-time pixel scanning** -- finder-pattern runs and flood-fill spans are scanned 4 bytes per step
+- **Single-division grid fitness** -- the 3x3 perspective samples per cell share one reciprocal refined by Newton-Raphson, avoiding 8 of 9 FPU divisions
 - **ESP32 memory layout** -- large buffers in SPIRAM (cache-aligned), temporary buffers in internal RAM
 - **FreeRTOS integration** -- task yields during long loops to prevent watchdog timeout
 

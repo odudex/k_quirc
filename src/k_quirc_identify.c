@@ -11,10 +11,6 @@
  * LIFO (stack) for flood-fill — uses persistent buffer from struct k_quirc
  */
 typedef struct {
-  int16_t x, y, l, r;
-} xylf_t;
-
-typedef struct {
   xylf_t *data;
   size_t len;
   size_t capacity;
@@ -33,6 +29,90 @@ ALWAYS_INLINE int lifo_push(lifo_t *s, const xylf_t *item) {
 
 ALWAYS_INLINE void lifo_pop(lifo_t *s, xylf_t *item) {
   *item = s->data[--s->len];
+}
+
+/*
+ * Pixel-row scanning primitives.  The fast paths process 4 pixels per
+ * iteration; they require byte-sized pixels and a little-endian target
+ * (both ESP32 and typical hosts), otherwise the plain loops are used.
+ */
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define K_QUIRC_LE_WORD_SCAN 1
+#else
+#define K_QUIRC_LE_WORD_SCAN 0
+#endif
+
+/* First index in [x, w) where row[index] != color; w if none.
+ * The word loop uses memcpy loads, so alignment is never violated; both
+ * x86 and the ESP32-P4 handle the unaligned accesses in hardware. */
+ALWAYS_INLINE int row_run_end(const quirc_pixel_t *row, int x, int w,
+                              quirc_pixel_t color) {
+  if (K_QUIRC_LE_WORD_SCAN && sizeof(quirc_pixel_t) == 1) {
+    uint32_t pat = (uint32_t)color * 0x01010101u;
+    while (x + 4 <= w) {
+      uint32_t v;
+      memcpy(&v, row + x, 4);
+      v ^= pat;
+      if (v)
+        return x + (__builtin_ctz(v) >> 3);
+      x += 4;
+    }
+  }
+  while (x < w && row[x] == color)
+    x++;
+  return x;
+}
+
+/* First index of the run of `color` pixels ending just before `left`:
+ * scans row[left-1], row[left-2], ... while they equal color. */
+ALWAYS_INLINE int row_run_start(const quirc_pixel_t *row, int left,
+                                quirc_pixel_t color) {
+  if (K_QUIRC_LE_WORD_SCAN && sizeof(quirc_pixel_t) == 1) {
+    uint32_t pat = (uint32_t)color * 0x01010101u;
+    while (left >= 4) {
+      uint32_t v;
+      memcpy(&v, row + left - 4, 4);
+      v ^= pat;
+      if (v)
+        return left - (__builtin_clz(v) >> 3);
+      left -= 4;
+    }
+  }
+  while (left > 0 && row[left - 1] == color)
+    left--;
+  return left;
+}
+
+/* First index in [x, limit] where row[index] == color; -1 if none.
+ * Open-coded zero-byte scan: most spans are short, so the call overhead
+ * of libc memchr would dominate. */
+ALWAYS_INLINE int row_find_pixel(const quirc_pixel_t *row, int x, int limit,
+                                 quirc_pixel_t color) {
+  if (K_QUIRC_LE_WORD_SCAN && sizeof(quirc_pixel_t) == 1) {
+    uint32_t pat = (uint32_t)color * 0x01010101u;
+    while (x + 4 <= limit + 1) {
+      uint32_t v;
+      memcpy(&v, row + x, 4);
+      v ^= pat;
+      uint32_t zero = (v - 0x01010101u) & ~v & 0x80808080u;
+      if (zero)
+        return x + (__builtin_ctz(zero) >> 3);
+      x += 4;
+    }
+  }
+  for (; x <= limit; x++)
+    if (row[x] == color)
+      return x;
+  return -1;
+}
+
+ALWAYS_INLINE void fill_span(quirc_pixel_t *p, int len, quirc_pixel_t v) {
+  if (sizeof(quirc_pixel_t) == 1) {
+    memset(p, v, (size_t)len);
+  } else {
+    for (int i = 0; i < len; i++)
+      p[i] = v;
+  }
 }
 
 /*
@@ -217,56 +297,64 @@ static void flood_fill_seed(struct k_quirc *q, int x, int y,
   lifo.capacity = QUIRC_FLOOD_FILL_STACK;
   lifo.overflow = &q->flood_fill_overflow;
 
+  /* Neighbor-row scan state for the active span.  Pixels only ever change
+   * away from from_color, so after returning from a child span the scan can
+   * resume where it stopped instead of rescanning from `left`.  The state
+   * is packed into the stack slot the original algorithm used for the
+   * (otherwise unused on resume) seed x: scan >= 0 means "scanning the row
+   * above, next index scan"; scan < 0 means "scanning the row below, next
+   * index -scan-1". */
+  int scan;
+  int left, right;
+
   for (;;) {
-    int left = x;
-    int right = x;
-    quirc_pixel_t *row = q->pixels + y * q->w;
+    {
+      quirc_pixel_t *row = q->pixels + y * q->w;
 
-    while (left > 0 && row[left - 1] == from_color)
-      left--;
+      left = row_run_start(row, x, from_color);
+      right = row_run_end(row, x + 1, q->w, from_color) - 1;
 
-    while (right < q->w - 1 && row[right + 1] == from_color)
-      right++;
+      fill_span(row + left, right - left + 1, to_color);
 
-    for (int i = left; i <= right; i++)
-      row[i] = to_color;
+      if (func)
+        func(user_data, y, left, right);
 
-    if (func)
-      func(user_data, y, left, right);
+      scan = left; /* start with the row above */
+    }
 
     for (;;) {
       bool recurse = false;
 
       if (lifo.len < lifo.capacity) {
-        if (y > 0) {
-          row = q->pixels + (y - 1) * q->w;
-          for (int i = left; i <= right; i++) {
-            if (row[i] == from_color) {
-              xylf_t context = {(int16_t)x, (int16_t)y, (int16_t)left,
+        if (scan >= 0) {
+          if (y > 0) {
+            const quirc_pixel_t *row = q->pixels + (y - 1) * q->w;
+            int i = row_find_pixel(row, scan, right, from_color);
+            if (i >= 0) {
+              xylf_t context = {(int16_t)(i + 1), (int16_t)y, (int16_t)left,
                                 (int16_t)right};
               if (!lifo_push(&lifo, &context))
                 return;
               x = i;
               y = y - 1;
               recurse = true;
-              break;
             }
           }
+          if (!recurse)
+            scan = -left - 1; /* row above done; switch to the row below */
         }
 
-        if (!recurse && y < q->h - 1) {
-          row = q->pixels + (y + 1) * q->w;
-          for (int i = left; i <= right; i++) {
-            if (row[i] == from_color) {
-              xylf_t context = {(int16_t)x, (int16_t)y, (int16_t)left,
-                                (int16_t)right};
-              if (!lifo_push(&lifo, &context))
-                return;
-              x = i;
-              y = y + 1;
-              recurse = true;
-              break;
-            }
+        if (!recurse && scan < 0 && y < q->h - 1) {
+          const quirc_pixel_t *row = q->pixels + (y + 1) * q->w;
+          int i = row_find_pixel(row, -scan - 1, right, from_color);
+          if (i >= 0) {
+            xylf_t context = {(int16_t)(-i - 2), (int16_t)y, (int16_t)left,
+                              (int16_t)right};
+            if (!lifo_push(&lifo, &context))
+              return;
+            x = i;
+            y = y + 1;
+            recurse = true;
           }
         }
       }
@@ -277,7 +365,7 @@ static void flood_fill_seed(struct k_quirc *q, int x, int y,
 
         xylf_t context;
         lifo_pop(&lifo, &context);
-        x = context.x;
+        scan = context.x;
         y = context.y;
         left = context.l;
         right = context.r;
@@ -338,6 +426,25 @@ static inline int clamp_threshold(int t) {
   return (t < 0) ? 0 : (t > 255) ? 255 : t;
 }
 
+/* Binarize a span of pixels against a constant threshold.  Branch-free
+ * body with no floating point: this is the SIMD-friendly kernel (an
+ * ESP32-P4 PIE implementation can process 16 pixels per instruction). */
+ALWAYS_INLINE void binarize_span(quirc_pixel_t *p, int len, int t,
+                                 uint8_t xor_mask) {
+  for (int i = 0; i < len; i++)
+    p[i] = ((p[i] ^ xor_mask) < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
+}
+
+static void histogram_rect(const quirc_pixel_t *pixels, int stride, int x0,
+                           int y0, int x1, int y1, uint32_t *hist) {
+  memset(hist, 0, 256 * sizeof(uint32_t));
+  for (int y = y0; y < y1; y++) {
+    const quirc_pixel_t *row = pixels + y * stride;
+    for (int x = x0; x < x1; x++)
+      hist[row[x]]++;
+  }
+}
+
 HOT_FUNC
 static void threshold(struct k_quirc *q, bool inverted) {
   int w = q->w;
@@ -359,40 +466,34 @@ static void threshold(struct k_quirc *q, bool inverted) {
   int sample_start_y = mid_y - half_h;
   int sample_end_y = mid_y + half_h;
 
-  uint32_t hist_tl[256] = {0}, hist_tr[256] = {0};
-  uint32_t hist_bl[256] = {0}, hist_br[256] = {0};
+  /* Process one quadrant at a time: a single 1 KB histogram on the stack
+   * instead of four (4 KB), and better cache locality. */
+  uint32_t hist[256];
+  uint32_t quad_pixels = (uint32_t)half_w * half_h;
+  int t_quad[4]; /* tl, tr, bl, br */
+  static const struct {
+    uint8_t left, top;
+  } quad_map[4] = {{1, 1}, {0, 1}, {1, 0}, {0, 0}};
 
-  for (int y = sample_start_y; y < sample_end_y; y++) {
-    quirc_pixel_t *row = pixels + y * w;
-    if (y < mid_y) {
-      for (int x = sample_start_x; x < mid_x; x++)
-        hist_tl[row[x]]++;
-      for (int x = mid_x; x < sample_end_x; x++)
-        hist_tr[row[x]]++;
-    } else {
-      for (int x = sample_start_x; x < mid_x; x++)
-        hist_bl[row[x]]++;
-      for (int x = mid_x; x < sample_end_x; x++)
-        hist_br[row[x]]++;
-    }
+  for (int qi = 0; qi < 4; qi++) {
+    int x0 = quad_map[qi].left ? sample_start_x : mid_x;
+    int x1 = quad_map[qi].left ? mid_x : sample_end_x;
+    int y0 = quad_map[qi].top ? sample_start_y : mid_y;
+    int y1 = quad_map[qi].top ? mid_y : sample_end_y;
+
+    histogram_rect(pixels, w, x0, y0, x1, y1, hist);
+#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
+    t_quad[qi] = clamp_threshold(otsu_threshold(hist, quad_pixels) +
+                                 q->threshold_offset);
+#else
+    t_quad[qi] = otsu_threshold(hist, quad_pixels);
+#endif
   }
 
-  uint32_t quad_pixels = (uint32_t)half_w * half_h;
-#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-  int t_tl = clamp_threshold(otsu_threshold(hist_tl, quad_pixels) +
-                             q->threshold_offset);
-  int t_tr = clamp_threshold(otsu_threshold(hist_tr, quad_pixels) +
-                             q->threshold_offset);
-  int t_bl = clamp_threshold(otsu_threshold(hist_bl, quad_pixels) +
-                             q->threshold_offset);
-  int t_br = clamp_threshold(otsu_threshold(hist_br, quad_pixels) +
-                             q->threshold_offset);
-#else
-  int t_tl = otsu_threshold(hist_tl, quad_pixels);
-  int t_tr = otsu_threshold(hist_tr, quad_pixels);
-  int t_bl = otsu_threshold(hist_bl, quad_pixels);
-  int t_br = otsu_threshold(hist_br, quad_pixels);
-#endif
+  int t_tl = t_quad[0];
+  int t_tr = t_quad[1];
+  int t_bl = t_quad[2];
+  int t_br = t_quad[3];
 
   /* Fixed-point 16.16 bilinear interpolation — all integer math */
   int inv_h_dim = (h > 1) ? h - 1 : 1;
@@ -407,25 +508,41 @@ static void threshold(struct k_quirc *q, bool inverted) {
     int t_left_fp = tl_fp + y * dl_fp;
     int t_right_fp = tr_fp + y * dr_fp;
     int delta = t_right_fp - t_left_fp;
-    int dt_fp = delta / inv_w_dim;
-    int rem = delta - dt_fp * inv_w_dim;
-    int abs_rem = (rem >= 0) ? rem : -rem;
-    int step_corr = (rem >= 0) ? 1 : -1;
-    int error = 0;
-    int t_fp = t_left_fp;
-
     quirc_pixel_t *row = pixels + y * w;
 
-    for (int x = 0; x < w; x++) {
+    /* The interpolated threshold t(x) = (t_left_fp + trunc(x*delta/W)) >> 16
+     * is monotone along the row, so its integer part is constant over spans.
+     * Solve for each span boundary directly and binarize the span against a
+     * constant threshold: same output as per-pixel interpolation, but the
+     * inner loop is branch-free, FP-free and vectorizable. */
+    if (delta == 0) {
+      binarize_span(row, w, t_left_fp >> 16, xor_mask);
+      continue;
+    }
+
+    int x = 0;
+    while (x < w) {
+      int t_fp = t_left_fp + (int)((int64_t)x * delta / inv_w_dim);
       int t = t_fp >> 16;
-      row[x] =
-          ((row[x] ^ xor_mask) < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
-      t_fp += dt_fp;
-      error += abs_rem;
-      if (error >= inv_w_dim) {
-        t_fp += step_corr;
-        error -= inv_w_dim;
+      int64_t target, x_next;
+
+      if (delta > 0) {
+        /* first x where t(x) reaches t+1 */
+        target = (((int64_t)t + 1) << 16) - t_left_fp;
+        x_next = (target * inv_w_dim + delta - 1) / delta;
+      } else {
+        /* first x where t(x) drops below t */
+        target = (int64_t)t_left_fp - ((int64_t)t << 16) + 1;
+        x_next = (target * inv_w_dim + (-delta) - 1) / (-delta);
       }
+
+      if (x_next <= x)
+        x_next = x + 1;
+      if (x_next > w)
+        x_next = w;
+
+      binarize_span(row + x, (int)x_next - x, t, xor_mask);
+      x = (int)x_next;
     }
   }
 
@@ -437,15 +554,11 @@ static void threshold(struct k_quirc *q, bool inverted) {
   int sample_start_y = margin_y;
   int sample_end_y = h - margin_y;
 
-  uint32_t histogram[256] = {0};
-  uint32_t sampled_pixels = 0;
-  for (int y = sample_start_y; y < sample_end_y; y++) {
-    quirc_pixel_t *row = pixels + y * w;
-    for (int x = sample_start_x; x < sample_end_x; x++) {
-      histogram[row[x]]++;
-      sampled_pixels++;
-    }
-  }
+  uint32_t histogram[256];
+  histogram_rect(pixels, w, sample_start_x, sample_start_y, sample_end_x,
+                 sample_end_y, histogram);
+  uint32_t sampled_pixels = (uint32_t)(sample_end_x - sample_start_x) *
+                            (uint32_t)(sample_end_y - sample_start_y);
 
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
   uint8_t t = clamp_threshold(otsu_threshold(histogram, sampled_pixels) +
@@ -454,10 +567,7 @@ static void threshold(struct k_quirc *q, bool inverted) {
   uint8_t t = otsu_threshold(histogram, sampled_pixels);
 #endif
 
-  int total_pixels = w * h;
-  for (int i = 0; i < total_pixels; i++)
-    pixels[i] =
-        ((pixels[i] ^ xor_mask) < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
+  binarize_span(pixels, w * h, t, xor_mask);
 #endif /* K_QUIRC_BILINEAR_THRESHOLD */
 }
 
@@ -651,47 +761,51 @@ static void test_capstone(struct k_quirc *q, int x, int y, int *pb) {
 
 static void finder_scan(struct k_quirc *q, int y) {
   quirc_pixel_t *row = q->pixels + y * q->w;
-  uint8_t last_color;
-  int run_length = 1;
+  int w = q->w;
   int run_count = 0;
   int pb[5];
 
   memset(pb, 0, sizeof(pb));
-  last_color = row[0];
-  for (int x = 1; x < q->w; x++) {
-    uint8_t color = row[x];
 
-    if (color != last_color) {
-      pb[0] = pb[1];
-      pb[1] = pb[2];
-      pb[2] = pb[3];
-      pb[3] = pb[4];
-      pb[4] = run_length;
-      run_length = 0;
-      run_count++;
+  quirc_pixel_t color = row[0];
+  int start = 0;
 
-      if (!color && run_count >= 5) {
-        int avg = (pb[0] + pb[1] + pb[3] + pb[4]) >> 2;
-        if (avg == 0)
-          avg = 1;
-        int err = (avg * 3) >> 2;
+  for (;;) {
+    /* Word-at-a-time scan to the end of the current run */
+    int x = row_run_end(row, start + 1, w, color);
+    if (x >= w)
+      break; /* last run of the row never completes */
 
-        /* Check 1:1:3:1:1 finder pattern ratio */
-        int lo = avg - err;
-        int hi = avg + err;
-        int lo3 = avg * 3 - err;
-        int hi3 = avg * 3 + err;
+    pb[0] = pb[1];
+    pb[1] = pb[2];
+    pb[2] = pb[3];
+    pb[3] = pb[4];
+    pb[4] = x - start;
+    run_count++;
 
-        if (pb[0] >= lo && pb[0] <= hi && pb[1] >= lo && pb[1] <= hi &&
-            pb[2] >= lo3 && pb[2] <= hi3 && pb[3] >= lo && pb[3] <= hi &&
-            pb[4] >= lo && pb[4] <= hi) {
-          test_capstone(q, x, y, pb);
-        }
+    quirc_pixel_t next_color = row[x];
+
+    if (!next_color && run_count >= 5) {
+      int avg = (pb[0] + pb[1] + pb[3] + pb[4]) >> 2;
+      if (avg == 0)
+        avg = 1;
+      int err = (avg * 3) >> 2;
+
+      /* Check 1:1:3:1:1 finder pattern ratio */
+      int lo = avg - err;
+      int hi = avg + err;
+      int lo3 = avg * 3 - err;
+      int hi3 = avg * 3 + err;
+
+      if (pb[0] >= lo && pb[0] <= hi && pb[1] >= lo && pb[1] <= hi &&
+          pb[2] >= lo3 && pb[2] <= hi3 && pb[3] >= lo && pb[3] <= hi &&
+          pb[4] >= lo && pb[4] <= hi) {
+        test_capstone(q, x, y, pb);
       }
     }
 
-    run_length++;
-    last_color = color;
+    color = next_color;
+    start = x;
   }
 }
 
@@ -748,20 +862,42 @@ static void find_alignment_pattern(struct k_quirc *q, int index) {
 HOT_FUNC
 static int fitness_cell(const struct k_quirc *q, int index, int x, int y) {
   const struct quirc_grid *qr = &q->grids[index];
+  const float *c = qr->c;
   int score = 0;
-  struct quirc_point p;
-  static const float offsets[] = {0.3f, 0.5f, 0.7f};
+  static const float offs[] = {-0.2f, 0.0f, 0.2f};
   int w = q->w;
   int h = q->h;
   const quirc_pixel_t *pixels = q->pixels;
 
-  for (int v = 0; v < 3; v++) {
-    float yoff = y + offsets[v];
-    for (int u = 0; u < 3; u++) {
-      perspective_map(qr->c, x + offsets[u], yoff, &p);
+  /* Evaluate the perspective map at the cell center once, with a single
+   * true division; the eight surrounding samples lie within +/-0.2 modules,
+   * so their reciprocals are recovered from the center one with a
+   * Newton-Raphson step (error ~r^2 for a relative denominator change r,
+   * far below pixel rounding).  Avoids 8 of 9 float divisions per cell —
+   * division is the slowest FPU operation on the ESP32-P4. */
+  float uc = x + 0.5f;
+  float vc = y + 0.5f;
+  float den_c = c[6] * uc + c[7] * vc + 1.0f;
+  float nx_c = c[0] * uc + c[1] * vc + c[2];
+  float ny_c = c[3] * uc + c[4] * vc + c[5];
+  float inv_c = 1.0f / den_c;
 
-      if (LIKELY(p.y >= 0 && p.y < h && p.x >= 0 && p.x < w)) {
-        score += pixels[p.y * w + p.x] ? 1 : -1;
+  for (int vi = 0; vi < 3; vi++) {
+    float dv = offs[vi];
+    float den_v = den_c + c[7] * dv;
+    float nx_v = nx_c + c[1] * dv;
+    float ny_v = ny_c + c[4] * dv;
+
+    for (int ui = 0; ui < 3; ui++) {
+      float du = offs[ui];
+      float den = den_v + c[6] * du;
+      float inv = inv_c * (2.0f - den * inv_c);
+
+      int px = fast_roundf((nx_v + c[0] * du) * inv);
+      int py = fast_roundf((ny_v + c[3] * du) * inv);
+
+      if (LIKELY(py >= 0 && py < h && px >= 0 && px < w)) {
+        score += pixels[py * w + px] ? 1 : -1;
       }
     }
   }

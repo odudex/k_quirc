@@ -69,7 +69,17 @@ static inline void *k_malloc_fast(size_t size) {
 #define QUIRC_PERSPECTIVE_PARAMS 8
 #define QUIRC_MAX_VERSION 25
 #define QUIRC_MAX_ALIGNMENT 7
+/* Flood-fill span stack: entries are 8 bytes each (see xylf_t), so the
+ * default costs 64 KB of fast RAM.  Override to trade memory for the
+ * ability to fill extremely fragmented regions without overflow. */
+#ifndef QUIRC_FLOOD_FILL_STACK
 #define QUIRC_FLOOD_FILL_STACK 8192
+#endif
+
+/* Flood-fill stack entry (defined here so allocation can use its size) */
+typedef struct {
+  int16_t x, y, l, r;
+} xylf_t;
 #define K_QUIRC_MAX_IMAGE_DIM 1280
 #define K_QUIRC_THRESHOLD_OFFSET_DEFAULT 10
 #define K_QUIRC_THRESHOLD_OFFSET_MAX 20

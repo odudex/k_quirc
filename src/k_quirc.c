@@ -82,7 +82,7 @@ int k_quirc_resize(k_quirc_t *q, int w, int h) {
   }
 
   if (!q->flood_fill_stack) {
-    new_stack = K_MALLOC_SCRATCH(QUIRC_FLOOD_FILL_STACK * 8);
+    new_stack = K_MALLOC_SCRATCH(QUIRC_FLOOD_FILL_STACK * sizeof(xylf_t));
     if (!new_stack) {
       if (new_pixels)
         K_FREE(new_pixels);
