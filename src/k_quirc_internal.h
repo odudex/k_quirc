@@ -218,6 +218,8 @@ void k_quirc_set_threshold_offset_for(struct k_quirc *q, int offset);
  */
 void quirc_extract_internal(const struct k_quirc *q, int index,
                             struct quirc_code *code);
+void quirc_extract_nudged(const struct k_quirc *q, int index,
+                          struct quirc_code *code, float du, float dv);
 k_quirc_error_t quirc_decode_internal(const struct quirc_code *code,
                                       struct quirc_data *data,
                                       struct datastream *ds);

@@ -795,6 +795,18 @@ k_quirc_error_t quirc_decode_internal(const struct quirc_code *code,
 
 void quirc_extract_internal(const struct k_quirc *q, int index,
                             struct quirc_code *code) {
+  quirc_extract_nudged(q, index, code, 0.0f, 0.0f);
+}
+
+/* Extract the grid with the far (extrapolated) corner nudged by (du,dv)
+ * modules.  The nudge is applied in grid space with a bilinear weight that
+ * is zero at the three capstone-anchored corners and 1 at the corner
+ * opposite the corner capstone, so retries bend only the part of the fit
+ * that has no capstone anchoring it (v1 codes have no alignment pattern -
+ * that corner is pure extrapolation).  Called with (0,0) for the normal
+ * extraction. */
+void quirc_extract_nudged(const struct k_quirc *q, int index,
+                          struct quirc_code *code, float du, float dv) {
   const struct quirc_grid *qr = &q->grids[index];
   const int max_grid_size = QUIRC_MAX_VERSION * 4 + 17;
 
@@ -818,7 +830,11 @@ void quirc_extract_internal(const struct k_quirc *q, int index,
 
   code->size = qr->grid_size;
 
+  const int w = q->w;
+  const int h = q->h;
   const float *c = qr->c;
+  const bool nudged = (du != 0.0f) || (dv != 0.0f);
+  const float inv_gs2 = 1.0f / ((float)qr->grid_size * (float)qr->grid_size);
   int i = 0;
   for (int y = 0; y < qr->grid_size; y++) {
     /* Hoist the v-dependent terms of the perspective map out of the row */
@@ -829,12 +845,26 @@ void quirc_extract_internal(const struct k_quirc *q, int index,
 
     for (int x = 0; x < qr->grid_size; x++) {
       float ux = x + 0.5f;
-      float inv = 1.0f / (c[6] * ux + den_v);
-      int px = fast_roundf((c[0] * ux + nx_v) * inv);
-      int py = fast_roundf((c[3] * ux + ny_v) * inv);
+      float inv, mx, my;
+      if (!nudged) {
+        inv = 1.0f / (c[6] * ux + den_v);
+        mx = c[0] * ux + nx_v;
+        my = c[3] * ux + ny_v;
+      } else {
+        /* Weight grows towards the extrapolated corner (grid_size,
+         * grid_size); retry-only path, so the extra math is fine. */
+        float wgt = ux * vy * inv_gs2;
+        float un = ux + du * wgt;
+        float vn = vy + dv * wgt;
+        inv = 1.0f / (c[6] * un + c[7] * vn + 1.0f);
+        mx = c[0] * un + c[1] * vn + c[2];
+        my = c[3] * un + c[4] * vn + c[5];
+      }
+      int px = fast_roundf(mx * inv);
+      int py = fast_roundf(my * inv);
 
-      if (py >= 0 && py < q->h && px >= 0 && px < q->w) {
-        if (q->pixels[py * q->w + px])
+      if (py >= 0 && py < h && px >= 0 && px < w) {
+        if (q->pixels[py * w + px])
           code->cell_bitmap[i >> 3] |= (1 << (i & 7));
       }
 

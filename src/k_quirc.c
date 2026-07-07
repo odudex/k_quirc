@@ -160,6 +160,32 @@ k_quirc_error_t k_quirc_decode(k_quirc_t *q, int index,
   quirc_extract_internal(q, index, code);
 
   k_quirc_error_t err = quirc_decode_internal(code, data, ds);
+
+  /* Data-ECC failures are frequently a slightly misfitted grid rather than a
+   * bad image: the corner opposite the corner capstone is extrapolated (v1
+   * codes have no alignment pattern at all), and at small pixels-per-module
+   * a sub-module error there flips enough cells to exceed the ECC budget.
+   * Retry the extraction with that corner nudged around its fitted position.
+   * This costs nothing on the happy path and only re-runs the (cheap)
+   * extract+decode stages on frames that would otherwise be dropped.
+   * Restricted to small grids (<= v10): larger versions have alignment
+   * patterns anchoring the far corner so the nudge rarely helps there,
+   * and extraction cost scales with grid area. */
+  if (err == K_QUIRC_ERROR_DATA_ECC && q->grids[index].grid_size <= 57) {
+    static const float nudges[][2] = {
+        {-0.5f, -0.5f}, {0.5f, 0.5f}, {-0.5f, 0.0f},  {0.5f, 0.0f},
+        {0.0f, -0.5f},  {0.0f, 0.5f}, {-1.0f, -1.0f}, {1.0f, 1.0f},
+        {-1.0f, 0.0f},  {1.0f, 0.0f}, {0.0f, -1.0f},  {0.0f, 1.0f},
+    };
+    for (size_t n = 0; n < sizeof(nudges) / sizeof(nudges[0]); n++) {
+      quirc_extract_nudged(q, index, code, nudges[n][0], nudges[n][1]);
+      err = quirc_decode_internal(code, data, ds);
+      if (err == K_QUIRC_SUCCESS)
+        break;
+      err = K_QUIRC_ERROR_DATA_ECC;
+    }
+  }
+
   if (err == K_QUIRC_SUCCESS) {
     result->valid = true;
     for (int i = 0; i < 4; i++) {

@@ -8,16 +8,8 @@
 # Format: v{VV}_{ECC}_{MODE}_{render}_{FRAME}x{FRAME}
 #   render = ppm{PP} | fill{FF}
 
-# --- v1 at PPM=3 (3 pixels per module is at the resolution floor) ---
-v01_L_alphanumeric_ppm03_320x320
-v01_L_alphanumeric_ppm03_480x480
-v01_L_alphanumeric_ppm03_640x640
-v01_L_byte_ppm03_320x320
-v01_L_byte_ppm03_480x480
-v01_L_byte_ppm03_640x640
-v01_L_numeric_ppm03_320x320
-v01_L_numeric_ppm03_480x480
-v01_L_numeric_ppm03_640x640
+# (v1 at PPM=3 cases were fixed by the DATA_ECC grid-nudge decode retry
+# and removed from this list.)
 
 # --- v25 at low computed PPM (large grids in small/medium frames) ---
 v25_M_byte_fill90_640x640
