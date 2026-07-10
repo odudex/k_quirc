@@ -24,13 +24,11 @@ add_executable(k_quirc_api_test
 target_include_directories(k_quirc_test PRIVATE
     ${K_QUIRC_INC_DIR}
     ${K_QUIRC_SRC_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/stubs
 )
 
 target_include_directories(k_quirc_api_test PRIVATE
     ${K_QUIRC_INC_DIR}
     ${K_QUIRC_SRC_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/stubs
 )
 
 target_compile_definitions(k_quirc_test PRIVATE

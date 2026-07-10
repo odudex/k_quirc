@@ -3,10 +3,9 @@
  * Reed-Solomon error correction and QR code payload decoding
  */
 
-#include "esp_log.h"
 #include "k_quirc_internal.h"
 
-static const char *TAG = "k_quirc";
+#define TAG "k_quirc"
 
 #define MAX_POLY 64
 
@@ -817,8 +816,8 @@ void quirc_extract_nudged(const struct k_quirc *q, int index,
 
   /* Bounds check to prevent buffer overflow in cell_bitmap */
   if (qr->grid_size < 21 || qr->grid_size > max_grid_size) {
-    ESP_LOGW(TAG, "Grid size %d outside supported range 21..%d", qr->grid_size,
-             max_grid_size);
+    K_QUIRC_LOGW(TAG, "Grid size %d outside supported range 21..%d",
+                 qr->grid_size, max_grid_size);
     code->size = 0;
     return;
   }

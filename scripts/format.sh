@@ -17,7 +17,7 @@ case "$mode" in
 esac
 
 files=$(
-  find include src test/stubs -type f \( -name '*.c' -o -name '*.h' \)
+  find include src -type f \( -name '*.c' -o -name '*.h' \)
   find test -maxdepth 1 -type f -name '*.c'
 )
 

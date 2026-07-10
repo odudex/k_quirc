@@ -60,13 +60,3 @@ When a sample fails to decode, the harness automatically:
 The `validation/` directory contains a separate test suite that generates synthetic QR images across a matrix of versions, ECC levels, encoding modes, and scales, then runs them through this harness and validates that every decoded payload matches the expected data. See [`validation/README.md`](validation/README.md) for details.
 
 A GitHub Actions workflow at `.github/workflows/validate.yml` runs the full validation on push and PR.
-
-## Stubs
-
-The `stubs/` directory provides minimal stand-ins for ESP-IDF and FreeRTOS headers so the k_quirc sources compile on desktop:
-
-| Stub | What it does |
-|------|-------------|
-| `esp_log.h` | Routes `ESP_LOGW`/`ESP_LOGE` to stderr, silences info/debug |
-| `freertos/FreeRTOS.h` | Empty header |
-| `freertos/task.h` | `vTaskDelay` becomes a no-op |

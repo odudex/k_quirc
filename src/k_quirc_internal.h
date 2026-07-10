@@ -15,6 +15,29 @@
 
 #ifdef ESP_PLATFORM
 #include <esp_heap_caps.h>
+
+#if !defined(K_QUIRC_LOGW) || !defined(K_QUIRC_LOGE) ||                        \
+    !defined(K_QUIRC_LOGI) || !defined(K_QUIRC_LOGD)
+#include <esp_log.h>
+#endif
+#ifndef K_QUIRC_LOGW
+#define K_QUIRC_LOGW(tag, fmt, ...) ESP_LOGW(tag, fmt, ##__VA_ARGS__)
+#endif
+#ifndef K_QUIRC_LOGE
+#define K_QUIRC_LOGE(tag, fmt, ...) ESP_LOGE(tag, fmt, ##__VA_ARGS__)
+#endif
+#ifndef K_QUIRC_LOGI
+#define K_QUIRC_LOGI(tag, fmt, ...) ESP_LOGI(tag, fmt, ##__VA_ARGS__)
+#endif
+#ifndef K_QUIRC_LOGD
+#define K_QUIRC_LOGD(tag, fmt, ...) ESP_LOGD(tag, fmt, ##__VA_ARGS__)
+#endif
+#ifndef K_QUIRC_YIELD
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#define K_QUIRC_YIELD() vTaskDelay(1)
+#endif
+
 static inline void *k_malloc_large(size_t size) {
   void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT |
                                          MALLOC_CAP_CACHE_ALIGNED);
@@ -43,6 +66,30 @@ static inline void *k_malloc_fast(size_t size) {
 #define K_MALLOC_IMAGE(size) malloc(size)
 #define K_MALLOC_SCRATCH(size) malloc(size)
 #define K_FREE(ptr) free(ptr)
+
+#if !defined(K_QUIRC_LOGW) || !defined(K_QUIRC_LOGE) ||                        \
+    !defined(K_QUIRC_LOGI) || !defined(K_QUIRC_LOGD)
+#include <stdio.h>
+#endif
+#ifndef K_QUIRC_LOGW
+#define K_QUIRC_LOGW(tag, fmt, ...)                                            \
+  fprintf(stderr, "W (%s) " fmt "\n", tag, ##__VA_ARGS__)
+#endif
+#ifndef K_QUIRC_LOGE
+#define K_QUIRC_LOGE(tag, fmt, ...)                                            \
+  fprintf(stderr, "E (%s) " fmt "\n", tag, ##__VA_ARGS__)
+#endif
+#ifndef K_QUIRC_LOGI
+#define K_QUIRC_LOGI(tag, fmt, ...)                                            \
+  fprintf(stderr, "I (%s) " fmt "\n", tag, ##__VA_ARGS__)
+#endif
+#ifndef K_QUIRC_LOGD
+#define K_QUIRC_LOGD(tag, fmt, ...)                                            \
+  fprintf(stderr, "D (%s) " fmt "\n", tag, ##__VA_ARGS__)
+#endif
+#ifndef K_QUIRC_YIELD
+#define K_QUIRC_YIELD() ((void)0)
+#endif
 #endif
 
 /* Compiler optimization hints */
