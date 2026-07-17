@@ -31,6 +31,16 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    # Matrix parameters, shared by every validation leg below so the fixed,
+    # adaptive, and no-flag runs all cover the same images.
+    env:
+      MX_VERSIONS: ${{ inputs.versions || '1-25' }}
+      MX_ECC: ${{ inputs.ecc || 'L,M,Q,H' }}
+      MX_MODES: ${{ inputs.modes || 'numeric,alphanumeric,byte' }}
+      MX_PPM: ${{ inputs.ppm || '3,5,8,13,20' }}
+      MX_FILL: ${{ inputs.fill || '90' }}
+      MX_FRAMES: ${{ inputs.frames || '320,480,640' }}
+      MX_ITERATIONS: ${{ inputs.iterations || '3' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -53,32 +63,104 @@ jobs:
           cmake -B build_ci
           cmake --build build_ci
 
-      - name: Run validation
+      # Unit-level API contract checks (null-argument handling, threshold clamp,
+      # adaptive no-QR bail bound). Fast; guards the public API surface that the
+      # image-matrix validation never exercises directly.
+      - name: Run API tests
+        run: ./test/build_ci/k_quirc_api_test
+
+      # Deterministic in-tree sweep-rescue test: a synthetic faded/blurred frame
+      # (no binary asset) that the fixed +10 path cannot decode but the adaptive
+      # sweep can, asserting the lock persists to a one-pass steady state. The
+      # clean-image validation matrix only proves non-regression; this is the
+      # positive proof the sweep does its job.
+      - name: Run adaptive sweep test
+        run: ./test/build_ci/k_quirc_adaptive_test
+
+      - name: Run validation (fixed path)
         run: >
           python3 test/validation/run_validation.py
-          --versions ${{ inputs.versions || '1-25' }}
-          --ecc ${{ inputs.ecc || 'L,M,Q,H' }}
-          --modes ${{ inputs.modes || 'numeric,alphanumeric,byte' }}
-          --ppm ${{ inputs.ppm || '3,5,8,13,20' }}
-          --fill ${{ inputs.fill || '90' }}
-          --frames ${{ inputs.frames || '320,480,640' }}
-          --iterations ${{ inputs.iterations || '3' }}
+          --binary test/build_ci/k_quirc_test
+          --versions "$MX_VERSIONS"
+          --ecc "$MX_ECC"
+          --modes "$MX_MODES"
+          --ppm "$MX_PPM"
+          --fill "$MX_FILL"
+          --frames "$MX_FRAMES"
+          --iterations "$MX_ITERATIONS"
+          --csv-path validation-results.csv
           --json > validation-results.json
+
+      # Adaptive leg: same matrix, decoded via k_quirc_decode_adaptive
+      # (bootstrap sweep + lock). Guards the PR's headline non-regression
+      # guarantee -- the adaptive path must decode a superset of the fixed path
+      # with zero regressions -- against future commits.
+      - name: Run validation (adaptive sweep+lock)
+        run: >
+          python3 test/validation/run_validation.py
+          --binary test/build_ci/k_quirc_test
+          --adaptive
+          --versions "$MX_VERSIONS"
+          --ecc "$MX_ECC"
+          --modes "$MX_MODES"
+          --ppm "$MX_PPM"
+          --fill "$MX_FILL"
+          --frames "$MX_FRAMES"
+          --iterations "$MX_ITERATIONS"
+          --failures-dir test/validation/failures-adaptive
+          --csv-path validation-results-adaptive.csv
+          --json > validation-results-adaptive.json
+
+      # No-flag leg: build with the optional algorithms compiled out
+      # (K_QUIRC_ADAPTIVE_THRESHOLD + K_QUIRC_BILINEAR_THRESHOLD off) and run the
+      # fixed-path validation. Guards the opt-in contract -- the public API must
+      # stay callable and the fixed path must keep decoding when a consumer
+      # comments the flags out (the Defect-1 regression class).
+      - name: Build no-flag configuration
+        run: |
+          cd test
+          cmake -B build_noflag \
+            -DK_QUIRC_ADAPTIVE_THRESHOLD=OFF \
+            -DK_QUIRC_BILINEAR_THRESHOLD=OFF
+          cmake --build build_noflag
+
+      - name: Run validation (no-flag build, fixed path)
+        run: >
+          python3 test/validation/run_validation.py
+          --binary test/build_noflag/k_quirc_test
+          --versions "$MX_VERSIONS"
+          --ecc "$MX_ECC"
+          --modes "$MX_MODES"
+          --ppm "$MX_PPM"
+          --fill "$MX_FILL"
+          --frames "$MX_FRAMES"
+          --iterations "$MX_ITERATIONS"
+          --failures-dir test/validation/failures-noflag
+          --csv-path validation-results-noflag.csv
+          --json > validation-results-noflag.json
 
       - name: Show results summary
         if: always()
         run: |
           python3 <<'PY'
-          import json
-          d = json.load(open('validation-results.json'))
-          s = d['summary']
-          parts = [f"{s['passed']}/{s['total']} passed ({s['pass_rate']}%)"]
-          parts.append(f"{s['expected_failures']} expected failures")
-          if s.get('regressions', 0):
-              parts.append(f"REGRESSIONS: {s['regressions']}")
-          if s.get('newly_passing', 0):
-              parts.append(f"newly passing: {s['newly_passing']} ***")
-          print(', '.join(parts))
+          import json, os
+          for label, path in [
+              ("fixed", "validation-results.json"),
+              ("adaptive", "validation-results-adaptive.json"),
+              ("no-flag", "validation-results-noflag.json"),
+          ]:
+              if not os.path.exists(path):
+                  print(f"[{label}] (no results)")
+                  continue
+              d = json.load(open(path))
+              s = d['summary']
+              parts = [f"{s['passed']}/{s['total']} passed ({s['pass_rate']}%)"]
+              parts.append(f"{s['expected_failures']} expected failures")
+              if s.get('regressions', 0):
+                  parts.append(f"REGRESSIONS: {s['regressions']}")
+              if s.get('newly_passing', 0):
+                  parts.append(f"newly passing: {s['newly_passing']} ***")
+              print(f"[{label}] " + ', '.join(parts))
           PY
 
       - name: Upload results
@@ -89,10 +171,17 @@ jobs:
           path: |
             validation-results.json
             validation-results.csv
+            validation-results-adaptive.json
+            validation-results-adaptive.csv
+            validation-results-noflag.json
+            validation-results-noflag.csv
 
       - name: Upload failure images
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: failure-images
-          path: test/validation/failures/
+          path: |
+            test/validation/failures/
+            test/validation/failures-adaptive/
+            test/validation/failures-noflag/

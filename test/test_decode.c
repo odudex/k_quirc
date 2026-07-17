@@ -167,12 +167,42 @@ static int try_decode(k_quirc_t *q, const uint8_t *pixels, int w, int h,
   return 0;
 }
 
+/* Decode a sample via the bootstrap sweep + lock (THOROUGH effort). Fills the
+ * decoder buffer, then calls k_quirc_decode_adaptive; caps/grids reflect the
+ * last identify pass, for diagnostics. Returns 1 if decoded, 0 otherwise. */
+static int try_decode_adaptive(k_quirc_t *q, const uint8_t *pixels, int w,
+                               int h, k_quirc_result_t *result,
+                               k_quirc_error_t *out_err, int *out_caps,
+                               int *out_grids) {
+  uint8_t *buf = k_quirc_begin(q, NULL, NULL);
+  memcpy(buf, pixels, (size_t)w * h);
+  int ok = k_quirc_decode_adaptive(q, result, K_QUIRC_EFFORT_THOROUGH, NULL);
+  *out_grids = k_quirc_count(q);
+  *out_caps = q->num_capstones;
+  /* The adaptive API doesn't surface a per-grid error code. For the diagnostic
+   * Error column, report the real decode error of the last identify pass's
+   * first grid when one formed, rather than fabricating DATA_ECC for every
+   * miss (which mislabels "no grid at any offset" rows). When no grid formed,
+   * report a neutral SUCCESS -- the caps/grids columns already carry
+   * "no finder patterns"/"no grid formed". */
+  if (ok || *out_grids <= 0) {
+    *out_err = K_QUIRC_SUCCESS;
+  } else {
+    k_quirc_result_t diag;
+    *out_err = k_quirc_decode(q, 0, &diag);
+  }
+  return ok;
+}
+
 int main(int argc, char **argv) {
   const char *samples_dir = SAMPLES_DIR;
   if (argc > 1)
     samples_dir = argv[1];
 
   int hex_output = (getenv("K_QUIRC_HEX_OUTPUT") != NULL);
+  /* K_QUIRC_ADAPTIVE=1 decodes via k_quirc_decode_adaptive (sweep+lock) instead
+   * of the fixed-offset path, to validate the adaptive API over the matrix. */
+  int adaptive = (getenv("K_QUIRC_ADAPTIVE") != NULL);
 
   DIR *dir = opendir(samples_dir);
   if (!dir) {
@@ -244,11 +274,14 @@ int main(int argc, char **argv) {
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    /* First try with default offset (10) */
+    /* Adaptive mode: sweep+lock. Otherwise the fixed default offset (10). */
     k_quirc_result_t result;
     k_quirc_error_t err;
     int caps, grids;
-    int decoded = try_decode(q, pixels, w, h, 10, &result, &err, &caps, &grids);
+    int decoded =
+        adaptive
+            ? try_decode_adaptive(q, pixels, w, h, &result, &err, &caps, &grids)
+            : try_decode(q, pixels, w, h, 10, &result, &err, &caps, &grids);
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double ms = elapsed_ms(&t0, &t1);
@@ -322,23 +355,27 @@ int main(int argc, char **argv) {
         printf("\n");
       }
 
-      /* Sweep threshold offsets to see if any work */
-      int sweep_hits = 0;
-      char sweep_buf[128] = "";
-      int sweep_pos = 0;
-      for (int s = 0; s < nsweep; s++) {
-        k_quirc_result_t sr;
-        k_quirc_error_t se;
-        int sc, sg;
-        if (try_decode(q, pixels, w, h, sweep_offsets[s], &sr, &se, &sc, &sg)) {
-          sweep_pos +=
-              snprintf(sweep_buf + sweep_pos, sizeof(sweep_buf) - sweep_pos,
-                       "%s%d", sweep_hits ? "," : "", sweep_offsets[s]);
-          sweep_hits++;
+      /* Sweep threshold offsets to see if any work (diagnostic only; skipped in
+       * adaptive mode, which already swept internally). */
+      if (!adaptive) {
+        int sweep_hits = 0;
+        char sweep_buf[128] = "";
+        int sweep_pos = 0;
+        for (int s = 0; s < nsweep; s++) {
+          k_quirc_result_t sr;
+          k_quirc_error_t se;
+          int sc, sg;
+          if (try_decode(q, pixels, w, h, sweep_offsets[s], &sr, &se, &sc,
+                         &sg)) {
+            sweep_pos +=
+                snprintf(sweep_buf + sweep_pos, sizeof(sweep_buf) - sweep_pos,
+                         "%s%d", sweep_hits ? "," : "", sweep_offsets[s]);
+            sweep_hits++;
+          }
         }
+        if (sweep_hits)
+          printf("    --> Would decode at offset(s): %s\n", sweep_buf);
       }
-      if (sweep_hits)
-        printf("    --> Would decode at offset(s): %s\n", sweep_buf);
     }
 
     free(pixels);
@@ -350,9 +387,10 @@ int main(int argc, char **argv) {
 
   printf("--------------------------------------------------------------"
          "----------------------------------------------\n");
-  printf("Summary: %d/%d decoded (%.0f%%), total: %.1f ms, avg: %.1f ms\n",
+  printf("Summary: %d/%d decoded (%.0f%%), total: %.1f ms, avg: %.1f ms%s\n",
          decoded_count, total, total > 0 ? 100.0 * decoded_count / total : 0.0,
-         total_time, total > 0 ? total_time / total : 0.0);
+         total_time, total > 0 ? total_time / total : 0.0,
+         adaptive ? " [adaptive]" : "");
 
   return 0;
 }

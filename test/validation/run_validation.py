@@ -437,10 +437,12 @@ def build_harness(test_dir, build_dir_name):
 # Run and parse harness output
 # ---------------------------------------------------------------------------
 
-def run_harness(binary, samples_dir, timeout=600):
+def run_harness(binary, samples_dir, timeout=600, adaptive=False):
     """Run the test harness and return stdout."""
     env = os.environ.copy()
     env['K_QUIRC_HEX_OUTPUT'] = '1'
+    if adaptive:
+        env['K_QUIRC_ADAPTIVE'] = '1'
 
     result = subprocess.run(
         [binary, samples_dir],
@@ -737,6 +739,9 @@ def main():
                         help='Random payloads per configuration (default: 3)')
     parser.add_argument('--json', action='store_true',
                         help='Output JSON summary to stdout')
+    parser.add_argument('--adaptive', action='store_true',
+                        help='Decode via k_quirc_decode_adaptive (bootstrap '
+                             'sweep + lock) instead of the fixed-offset path')
     parser.add_argument('--binary', default=None,
                         help='Path to pre-built k_quirc_test binary')
     parser.add_argument('--build-dir', default='build_ci',
@@ -852,7 +857,7 @@ def main():
         print(f"Running k_quirc_test on {len(cases)} images...",
               file=sys.stderr)
         try:
-            stdout = run_harness(binary, tmp_dir)
+            stdout = run_harness(binary, tmp_dir, adaptive=args.adaptive)
         except subprocess.TimeoutExpired as e:
             print(f"Error: harness timed out after {e.timeout}s",
                   file=sys.stderr)

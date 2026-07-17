@@ -6,9 +6,16 @@ sdkconfig.old
 # Test artifacts
 pgm_samples/
 test/build_ci/
+test/build_noflag/
 test/validation/failures/
+test/validation/failures-adaptive/
+test/validation/failures-noflag/
 validation-results.json
 validation-results.csv
+validation-results-adaptive.json
+validation-results-adaptive.csv
+validation-results-noflag.json
+validation-results-noflag.csv
 
 # Python
 __pycache__/

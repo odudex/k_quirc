@@ -38,6 +38,7 @@ k_quirc_t *k_quirc_new(void) {
     memset(q, 0, sizeof(*q));
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
     q->threshold_offset = k_quirc_get_threshold_offset();
+    q->ladder_select = K_QUIRC_LADDER_DEFAULT;
 #endif
   }
   return q;
@@ -51,6 +52,10 @@ void k_quirc_destroy(k_quirc_t *q) {
       K_FREE(q->pixels);
     if (q->flood_fill_stack)
       K_FREE(q->flood_fill_stack);
+#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
+    if (q->adaptive_snapshot)
+      K_FREE(q->adaptive_snapshot);
+#endif
     K_FREE(q);
   }
 }
@@ -140,6 +145,187 @@ void k_quirc_end(k_quirc_t *q, bool find_inverted) {
 
   k_quirc_identify(q, find_inverted);
 }
+
+void k_quirc_set_ladder(k_quirc_t *q, k_quirc_ladder_t ladder) {
+#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
+  if (!q)
+    return;
+  q->ladder_select = (ladder == K_QUIRC_LADDER_REFLECTIVE)
+                         ? K_QUIRC_LADDER_REFLECTIVE
+                         : K_QUIRC_LADDER_EMISSIVE;
+#else
+  /* No adaptive machinery: keep the API callable as a no-op. */
+  (void)q;
+  (void)ladder;
+#endif
+}
+
+void k_quirc_set_sweep_cap(k_quirc_t *q, int cap) {
+#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
+  if (!q)
+    return;
+  if (cap < 0)
+    cap = 0;
+  q->sweep_cap = cap;
+#else
+  /* No adaptive machinery: keep the API callable as a no-op. */
+  (void)q;
+  (void)cap;
+#endif
+}
+
+#ifndef K_QUIRC_ADAPTIVE_THRESHOLD
+/* Without the adaptive-threshold machinery there is no offset to sweep or
+ * lock; keep the API available by degrading to a single identify+decode at
+ * the build's fixed threshold. */
+int k_quirc_decode_adaptive(k_quirc_t *q, k_quirc_result_t *result,
+                            k_quirc_effort_t effort,
+                            k_quirc_adaptive_stats_t *stats) {
+  (void)effort;
+  if (stats)
+    memset(stats, 0, sizeof(*stats));
+  if (!q || !q->image || !q->pixels || !q->flood_fill_stack || !result)
+    return 0;
+  k_quirc_identify(q, false);
+  int decoded = 0;
+  const int ngrids = k_quirc_count(q);
+  for (int g = 0; g < ngrids && !decoded; g++) {
+    if (k_quirc_decode(q, g, result) == K_QUIRC_SUCCESS && result->valid)
+      decoded = 1;
+  }
+  if (stats) {
+    stats->passes = 1;
+    stats->decoded = (bool)decoded;
+  }
+  return decoded;
+}
+#else
+int k_quirc_decode_adaptive(k_quirc_t *q, k_quirc_result_t *result,
+                            k_quirc_effort_t effort,
+                            k_quirc_adaptive_stats_t *stats) {
+  if (stats)
+    memset(stats, 0, sizeof(*stats));
+  if (!q || !q->image || !q->pixels || !q->flood_fill_stack || !result)
+    return 0;
+
+  /* Absolute offset ladder tried after the seed, selected by media profile
+   * (see k_quirc_ladder_t). The order sets the acquisition search only; the
+   * lock self-corrects the seed after the first success (so a mis-ordered
+   * ladder just costs a few probes at cold start).
+   *
+   * EMISSIVE (default): the first four rungs are the original ladder's, so
+   * FAST at the default budget probes exactly {seed, -15, -10, -20}; the tail
+   * replaces the near-zero-yield positive rungs with -25/-30, the measured
+   * deep cluster of emissive captures (every rung's yield is derived in the
+   * PR's marginal-yield table). 0 stays as the guaranteed non-negative probe
+   * (see the no-QR early-out below). Deep rungs probe after every shallower
+   * rung, so nothing the original ladder decodes is delayed or lost.
+   *
+   * REFLECTIVE: shallow +-10 flanks around the seed -- in-focus reflective
+   * media decodes at or near the default threshold, so deep rungs are wasted
+   * passes there. */
+  static const int ladder_emissive[] = {-15, -10, -20, -5, -25, 0, -30};
+  static const int ladder_reflective[] = {-5, 5, -10, 10};
+  const int refl = (q->ladder_select == K_QUIRC_LADDER_REFLECTIVE);
+  const int *ladder = refl ? ladder_reflective : ladder_emissive;
+  const int nlad =
+      refl ? (int)(sizeof(ladder_reflective) / sizeof(ladder_reflective[0]))
+           : (int)(sizeof(ladder_emissive) / sizeof(ladder_emissive[0]));
+  int cap =
+      (effort == K_QUIRC_EFFORT_FAST) ? K_QUIRC_FAST_CAP_DEFAULT : (nlad + 1);
+  if (q->sweep_cap > 0)
+    cap = q->sweep_cap; /* explicit per-instance probe budget */
+
+  const int seed = k_quirc_get_threshold_offset_for(q);
+  const size_t n = (size_t)q->w * q->h;
+
+  /* threshold() binarizes q->pixels in place, and pixels alias image, so each
+   * re-identify would otherwise threshold the previous pass's 0/1 output. Keep
+   * a pristine grayscale copy and restore it before every re-identify, in a
+   * buffer cached on the decoder (grown as needed, freed in k_quirc_destroy) to
+   * avoid a w*h alloc/free per call during scanning. If it can't be allocated,
+   * degrade to a single attempt at the seed. */
+  if (q->adaptive_snapshot_cap < n) {
+    K_FREE(q->adaptive_snapshot);
+    q->adaptive_snapshot = K_MALLOC_IMAGE(n);
+    q->adaptive_snapshot_cap = q->adaptive_snapshot ? n : 0;
+  }
+  uint8_t *pristine = q->adaptive_snapshot;
+
+  int passes = 0;
+  int decoded = 0;
+  int max_caps = 0;      /* most finder patterns seen across probes so far */
+  int probed_nonneg = 0; /* a non-negative offset has been probed */
+  /* stage 0 = the seed (locked) offset; stages 1..nlad = the ladder. */
+  for (int stage = 0; stage <= nlad && passes < cap && !decoded; stage++) {
+    const int off = (stage == 0) ? seed : ladder[stage - 1];
+    if (stage > 0 && off == seed)
+      continue; /* already tried the seed at stage 0 */
+
+    if (passes == 0) {
+      if (pristine)
+        memcpy(pristine, q->image, n); /* snapshot before the first identify */
+    } else if (pristine) {
+      memcpy(q->image, pristine, n); /* restore grayscale before re-identify */
+    } else {
+      break; /* no snapshot -> the first (seed) attempt is all we can do */
+    }
+
+    k_quirc_set_threshold_offset_for(q, off);
+    /* per-frame identify state that k_quirc_begin() normally clears */
+    q->num_regions = QUIRC_PIXEL_REGION;
+    q->num_capstones = 0;
+    q->num_grids = 0;
+    q->flood_fill_overflow = false;
+    k_quirc_identify(q, false);
+    passes++;
+
+    const int ngrids = k_quirc_count(q);
+    for (int g = 0; g < ngrids; g++) {
+      if (k_quirc_decode(q, g, result) == K_QUIRC_SUCCESS && result->valid) {
+        /* LOCK the winning offset. This intentionally overrides the ±1/frame
+         * wander that update_threshold_offset() applied during identify: the
+         * sweep already found the offset that decodes, so the explicit lock,
+         * not the nudge, is what the next frame should seed from. */
+        k_quirc_set_threshold_offset_for(q, off);
+        decoded = 1;
+        break;
+      }
+    }
+
+    /* No-QR early-out. Finder patterns are the most threshold-robust part of a
+     * QR (large, high-contrast), so once the two most likely offsets -- the
+     * seed and the first ladder entry -- have both been tried and NOT one
+     * capstone has appeared, there is very likely no QR in frame. Stop rather
+     * than burn the rest of the ladder on an empty/searching frame (this keeps
+     * idle cheap: ~2 passes, not the full cap).
+     *
+     * Exception: a dark, low-contrast code (e.g. faded print) can lose ALL
+     * capstones at strongly negative offsets, so a warm negative lock could
+     * bail before the positive regime is ever probed. THOROUGH promises the
+     * full sweep, so it additionally requires at least one non-negative probe
+     * before concluding no-QR; FAST keeps the cheap 2-probe bail (its idle
+     * cost bound is the point of FAST). */
+    if (off >= 0)
+      probed_nonneg = 1;
+    if (q->num_capstones > max_caps)
+      max_caps = q->num_capstones;
+    if (!decoded && passes >= 2 && max_caps == 0 &&
+        (effort == K_QUIRC_EFFORT_FAST || probed_nonneg))
+      break;
+  }
+
+  if (!decoded)
+    k_quirc_set_threshold_offset_for(
+        q, seed); /* don't disturb the lock on a miss */
+  if (stats) {
+    stats->passes = passes;
+    stats->locked_offset = k_quirc_get_threshold_offset_for(q);
+    stats->decoded = (bool)decoded;
+  }
+  return decoded;
+}
+#endif /* K_QUIRC_ADAPTIVE_THRESHOLD */
 
 int k_quirc_count(const k_quirc_t *q) { return q ? q->num_grids : 0; }
 

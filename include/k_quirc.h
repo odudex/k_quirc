@@ -154,6 +154,84 @@ int k_quirc_decode_grayscale(const uint8_t *grayscale_data, int width,
                              int height, k_quirc_result_t *results,
                              int max_results, bool find_inverted);
 
+/* Effort level for the adaptive-threshold decode sweep. */
+typedef enum {
+  K_QUIRC_EFFORT_FAST = 0, /* bounded sweep — animated scans (bound the tax on
+                              undecodable frames so throughput doesn't stall) */
+  K_QUIRC_EFFORT_THOROUGH, /* full sweep — static scans (paper/metal/SeedQR),
+                              where a dropped frame costs nothing */
+} k_quirc_effort_t;
+
+/* Per-call cost/behaviour readout for k_quirc_decode_adaptive (all optional).
+ */
+typedef struct {
+  int passes; /* identify passes performed; the per-frame cost driver — 1
+                 once locked, up to the ladder cap on acquisition */
+  int locked_offset; /* threshold offset in effect at return (the lock on a hit,
+                        the restored seed on a miss) */
+  bool decoded;      /* a code decoded (mirrors the return value) */
+} k_quirc_adaptive_stats_t;
+
+/**
+ * Adaptive-threshold decode with bootstrap sweep + lock.
+ *
+ * Fill the grayscale buffer via k_quirc_begin() first, then call this instead
+ * of end()+count()+decode(). Sweeps the binarization threshold offset to find
+ * one that decodes, seeded from the current (locked) offset, and LEAVES the
+ * winning offset in place so the next (similar) frame decodes immediately at
+ * ~one pass. Composes with the per-grid decode, including any corner-nudge
+ * rescue.
+ *
+ * The threshold binarizes the image in place, so this snapshots the grayscale
+ * once (in a buffer cached on the decoder) and restores it before each
+ * re-identify.
+ *
+ * @param q       Decoder instance (already resized + filled via k_quirc_begin)
+ * @param result  Receives the first decoded code
+ * @param effort  FAST (bounded) or THOROUGH (full sweep)
+ * @param stats   Optional (nullable) per-call cost/behaviour readout
+ * @return 1 if a code decoded (into *result), 0 otherwise
+ */
+int k_quirc_decode_adaptive(k_quirc_t *q, k_quirc_result_t *result,
+                            k_quirc_effort_t effort,
+                            k_quirc_adaptive_stats_t *stats);
+
+/* Media profile for the adaptive sweep's offset ladder. Emissive sources
+ * (a code on an LCD/OLED) and reflective ones (paper/metal) want threshold
+ * offsets in different regimes, so each profile is a different ladder. */
+typedef enum {
+  K_QUIRC_LADDER_EMISSIVE = 0, /* negative-leaning, reach -30: camera captures
+                                  of bright emissive sources cluster at
+                                  -10..-30. The first rungs are the original
+                                  ladder's, so FAST behaviour at the default
+                                  probe budget is unchanged. */
+  K_QUIRC_LADDER_REFLECTIVE,   /* shallow +-10 flanks around the seed: in-focus
+                                  reflective media decodes at or near the
+                                  default threshold; deep rungs are wasted
+                                  passes there. */
+} k_quirc_ladder_t;
+
+/**
+ * Select the media-profile ladder k_quirc_decode_adaptive sweeps
+ * (per-instance). A fresh decoder starts on K_QUIRC_LADDER_DEFAULT
+ * (emissive; override the macro at build time). Callable in every build
+ * configuration; a no-op when K_QUIRC_ADAPTIVE_THRESHOLD is compiled out.
+ */
+void k_quirc_set_ladder(k_quirc_t *q, k_quirc_ladder_t ladder);
+
+/**
+ * Numeric probe budget for k_quirc_decode_adaptive (per-instance).
+ *
+ * When set (> 0), overrides the effort level's built-in pass cap (FAST
+ * K_QUIRC_FAST_CAP_DEFAULT / THOROUGH full ladder) with an explicit per-call
+ * probe budget. 0 restores the effort defaults. The main use is opting a
+ * parallel-decoder consumer into deeper animated-scan reach (e.g. cap 6
+ * extends FAST through the emissive ladder's -25 rung) or tightening the
+ * bound further for a slow single decoder. Callable in every build
+ * configuration; a no-op when K_QUIRC_ADAPTIVE_THRESHOLD is compiled out.
+ */
+void k_quirc_set_sweep_cap(k_quirc_t *q, int cap);
+
 /* Debug visualization support */
 #ifdef K_QUIRC_DEBUG
 

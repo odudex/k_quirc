@@ -90,5 +90,55 @@ int main(void) {
   k_quirc_destroy(q2);
   k_quirc_set_threshold_offset(K_QUIRC_THRESHOLD_OFFSET_DEFAULT);
 
+  /* k_quirc_decode_adaptive: argument + no-QR contracts. A successful decode
+   * and the offset lock are behavioural and need a real QR, so they are
+   * exercised by the decode/validation harness rather than here. */
+  check_int(
+      "adaptive null q",
+      k_quirc_decode_adaptive(NULL, &result, K_QUIRC_EFFORT_THOROUGH, NULL), 0);
+  k_quirc_t *qa = k_quirc_new();
+  check_ptr_nonnull("adaptive new", qa);
+  if (qa) {
+    /* Unresized (no image buffer yet) must fail gracefully, not crash. */
+    check_int(
+        "adaptive before resize",
+        k_quirc_decode_adaptive(qa, &result, K_QUIRC_EFFORT_THOROUGH, NULL), 0);
+    check_int("adaptive resize", k_quirc_resize(qa, 64, 64), 0);
+    uint8_t *buf = k_quirc_begin(qa, NULL, NULL);
+    check_ptr_nonnull("adaptive begin", buf);
+    if (buf) {
+      memset(buf, 0xff, 64 * 64); /* uniform white: no QR present */
+      check_int(
+          "adaptive null result",
+          k_quirc_decode_adaptive(qa, NULL, K_QUIRC_EFFORT_THOROUGH, NULL), 0);
+      k_quirc_adaptive_stats_t stats;
+      check_int(
+          "adaptive no-qr returns 0",
+          k_quirc_decode_adaptive(qa, &result, K_QUIRC_EFFORT_THOROUGH, &stats),
+          0);
+      check_int("adaptive no-qr not decoded", stats.decoded, 0);
+      /* The no-finder early-out bounds an empty frame to ~2 passes instead of
+       * walking the full ladder. */
+      if (stats.passes > 2) {
+        fprintf(stderr, "adaptive no-qr passes=%d, want <=2\n", stats.passes);
+        failures++;
+      }
+      /* NULL stats must be safe. */
+      check_int("adaptive null stats safe",
+                k_quirc_decode_adaptive(qa, &result, K_QUIRC_EFFORT_FAST, NULL),
+                0);
+    }
+    /* Ladder-profile / sweep-cap setters: callable in every build
+     * configuration (no-ops without K_QUIRC_ADAPTIVE_THRESHOLD), NULL-safe. */
+    k_quirc_set_ladder(NULL, K_QUIRC_LADDER_REFLECTIVE);
+    k_quirc_set_ladder(qa, K_QUIRC_LADDER_REFLECTIVE);
+    k_quirc_set_ladder(qa, K_QUIRC_LADDER_EMISSIVE);
+    k_quirc_set_sweep_cap(NULL, 6);
+    k_quirc_set_sweep_cap(qa, -1);
+    k_quirc_set_sweep_cap(qa, 6);
+    k_quirc_set_sweep_cap(qa, 0);
+    k_quirc_destroy(qa);
+  }
+
   return failures ? 1 : 0;
 }

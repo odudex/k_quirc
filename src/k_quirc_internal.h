@@ -129,7 +129,31 @@ typedef struct {
 } xylf_t;
 #define K_QUIRC_MAX_IMAGE_DIM 1280
 #define K_QUIRC_THRESHOLD_OFFSET_DEFAULT 10
-#define K_QUIRC_THRESHOLD_OFFSET_MAX 20
+/* Threshold-offset clamp (setter + per-frame +-1 wander). 40 so the emissive
+ * ladder's deep rungs are settable, a deep lock can persist frame-to-frame,
+ * and a consumer can seed beyond the default ladder reach (measured sessions
+ * lock as deep as -35/-40 on emissive sources). #ifndef-guarded: overriding
+ * from the build line works (an unconditional define here would silently win
+ * over a -D flag with only a redefinition warning). */
+#ifndef K_QUIRC_THRESHOLD_OFFSET_MAX
+#define K_QUIRC_THRESHOLD_OFFSET_MAX 40
+#endif
+
+/* Media-profile ladder a fresh decoder starts on; see k_quirc_set_ladder().
+ * Override at build time to start reflective. */
+#ifndef K_QUIRC_LADDER_DEFAULT
+#define K_QUIRC_LADDER_DEFAULT K_QUIRC_LADDER_EMISSIVE
+#endif
+
+/* FAST-effort probe budget (the seed pass counts as one probe). 4 keeps the
+ * animated-scan probe set exactly the original {seed, -15, -10, -20} -- the
+ * device-proven bound. Consumers with a parallel decoder (or slack in their
+ * frame budget) raise it at build time or per-instance at runtime via
+ * k_quirc_set_sweep_cap(); 6 extends FAST through the emissive ladder's -25
+ * rung. */
+#ifndef K_QUIRC_FAST_CAP_DEFAULT
+#define K_QUIRC_FAST_CAP_DEFAULT 4
+#endif
 
 #if QUIRC_MAX_REGIONS < UINT8_MAX
 typedef uint8_t quirc_pixel_t;
@@ -203,6 +227,16 @@ struct k_quirc {
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
   int threshold_offset;
   bool processing_inverted;
+  /* Reusable grayscale snapshot for the k_quirc_decode_adaptive threshold
+   * sweep, grown as needed and freed in k_quirc_destroy — avoids a w*h
+   * alloc/free on every decode during scanning. */
+  uint8_t *adaptive_snapshot;
+  size_t adaptive_snapshot_cap;
+  int ladder_select; /* media-profile ladder the sweep walks (k_quirc_ladder_t);
+                        starts at K_QUIRC_LADDER_DEFAULT; see
+                        k_quirc_set_ladder() */
+  int sweep_cap;     /* >0: numeric probe budget overriding the effort cap; see
+                        k_quirc_set_sweep_cap() */
 #endif
   int w;
   int h;
