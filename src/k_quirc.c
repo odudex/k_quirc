@@ -286,7 +286,6 @@ const k_quirc_debug_info_t *k_quirc_get_debug_info(const k_quirc_t *q) {
   for (int i = 0; i < q->num_grids && i < K_QUIRC_DEBUG_MAX_GRIDS; i++) {
     memcpy(debug_info.grids[i].c, q->grids[i].c, sizeof(float) * 8);
     debug_info.grids[i].grid_size = q->grids[i].grid_size;
-    debug_info.grids[i].timing_bias = q->grids[i].timing_bias;
   }
 
   debug_info.num_capstones = q->num_capstones;

@@ -172,7 +172,6 @@ typedef struct {
 typedef struct {
   float c[8];
   int grid_size;
-  int timing_bias;
 } k_quirc_debug_grid_t;
 
 typedef struct {

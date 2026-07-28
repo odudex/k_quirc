@@ -32,7 +32,7 @@ decoding above −10 and +0, so the best any constant achieves is 8/10.
 cd test && cmake -B build && cmake --build build
 ./build/k_quirc_convergence_test
 ./build/k_quirc_convergence_test --verbose                      # trajectories
-./build/k_quirc_convergence_test --min-lock 5 --min-yield 55    # enforce
+./build/k_quirc_convergence_test --min-lock 10 --min-yield 100  # enforce
 ./build/k_quirc_convergence_test --dir ../pgm_samples           # real captures
 ```
 
@@ -41,20 +41,37 @@ explicit thresholds so regressions fail the build.
 
 ## Baseline
 
-The controller as it stands (timing-pattern bias, ±1 step per frame, offset
-clamped to ±20):
+Finder-area controller versus the timing-pattern one it replaced:
 
-```
-Locked from every start offset: 5/10 vectors
-Mean steady-state yield:        55%
-Runs still hunting:             0/40
-Runs not converged after 40 f:  5/40
-```
+| | vectors: old | current | real captures: old | current |
+|---|---|---|---|---|
+| Locked | 5/10 | **10/10** | 24/64 | **26/64** |
+| Yield | 55% | **100%** | 38% | **43%** |
+| Hunting | 0/40 | 0/40 | 2/256 | **1/256** |
+| Not converged | 5/40 | **0/40** | 20/256 | **1/256** |
+| Frames to lock | 28-29 | **0-4** | | |
 
-It is stable and correctly signed: it never hunts, does not drift off the sharp
-control vector, and walks *down* on the heavy-ink vectors. But it is slow —
-28-29 frames to lock, 3-4 s at 10-15 fps — and range-limited: five vectors ramp
-into the ±20 clamp and stop there, still undecoded.
+Yield on the real set is capped well below 100% because only about 40% of those
+captures decode at *any* offset — most are lost to resolution or focus, not
+thresholding.
+
+### Stability
+
+The offset accumulates while the measurement settles within the frame, so the
+error decays as `e[n+1] = (1 − L)·e[n]` with `L = GAIN × Kp`. Measured across
+the real captures the plant gain `Kp = d(dilation)/d(offset)` spans 0.0005 to
+0.0033 — a sevenfold spread:
+
+| plant | L | pole | settling to 95% |
+|---|---|---|---|
+| slowest measured | 0.09 | +0.91 | 32 frames |
+| median | 0.36 | +0.64 | 6.7 frames |
+| fastest measured | 0.66 | +0.34 | 2.8 frames |
+
+The pole stays real and positive throughout, so the approach is monotone from
+any starting offset. Overshoot needs `L > 1` (1.5× the fastest measured plant),
+instability `L ≥ 2` (3×). The gain buys that margin rather than the shortest
+settling time, which is why `Hunt` is 0 rather than merely small.
 
 ## Regenerating the vectors
 
@@ -93,6 +110,6 @@ with δ the implied black dilation in modules:
 
 The defocused vectors sit slightly harsher than reality, which is deliberate
 headroom. The heavy-ink pair are the only ones on the far side of ideal, and
-they are what stops a one-directional controller from passing. Sensor noise
-matters too: without it the vectors are too clean to provoke the limit cycling
-real captures cause.
+they are what stops a one-directional controller from passing. The sensor noise
+matters too: without it the vectors were too clean to provoke the limit cycling
+real captures cause, and the test scored a hunting controller as perfect.
