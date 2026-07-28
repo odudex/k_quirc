@@ -690,6 +690,81 @@ static void find_region_corners(struct k_quirc *q, int rcode,
                   find_other_corners, &psd, 0);
 }
 
+#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
+/*
+ * Measure how far binarization has moved the black/white boundary, using the
+ * finder pattern as a built-in calibration target.
+ *
+ * A finder is 7x7 modules of known composition: a 3x3 black stone, a
+ * one-module white ring, and a one-module black ring.  If binarization
+ * dilates black by d modules, then in units of module area
+ *
+ *     white = 16 - 32d          ring = 24 + 48d
+ *
+ * Both are exactly linear -- the white ring is squeezed from both sides while
+ * the outer ring grows on both, and the quadratic terms cancel -- so
+ * eliminating the unknown module area between them leaves
+ *
+ *     d = (2*ring - 3*white) / (4*ring + 6*white)
+ *
+ * independent of scale, focus and viewing angle.  Counted per capstone during
+ * detection, so a single finder steers the next frame even when no grid forms.
+ */
+static void accumulate_dilation(struct k_quirc *q, int ring_code,
+                                const struct quirc_point *corners) {
+  int x0 = corners[0].x, x1 = corners[0].x;
+  int y0 = corners[0].y, y1 = corners[0].y;
+
+  for (int i = 1; i < 4; i++) {
+    if (corners[i].x < x0)
+      x0 = corners[i].x;
+    if (corners[i].x > x1)
+      x1 = corners[i].x;
+    if (corners[i].y < y0)
+      y0 = corners[i].y;
+    if (corners[i].y > y1)
+      y1 = corners[i].y;
+  }
+  if (x0 < 0)
+    x0 = 0;
+  if (y0 < 0)
+    y0 = 0;
+  if (x1 >= q->w)
+    x1 = q->w - 1;
+  if (y1 >= q->h)
+    y1 = q->h - 1;
+
+  const quirc_pixel_t code = (quirc_pixel_t)ring_code;
+  uint32_t ring = 0;
+  uint32_t white = 0;
+
+  for (int y = y0; y <= y1; y++) {
+    const quirc_pixel_t *row = q->pixels + (size_t)y * q->w;
+    uint32_t pending = 0;
+    bool inside = false;
+
+    /* A white run only counts once another ring pixel closes it, so the run
+     * trailing off the right of the finder is simply never banked.  That
+     * settles the row in one pass, with no need to locate its extents first. */
+    for (int x = x0; x <= x1; x++) {
+      quirc_pixel_t p = row[x];
+      if (p == code) {
+        ring++;
+        if (inside)
+          white += pending;
+        inside = true;
+        pending = 0;
+      } else if (inside && p == QUIRC_PIXEL_WHITE) {
+        pending++;
+      }
+    }
+  }
+
+  q->dilation_ring += ring;
+  q->dilation_white += white;
+}
+#endif /* K_QUIRC_ADAPTIVE_THRESHOLD */
+
 static void record_capstone(struct k_quirc *q, int ring, int stone) {
   struct quirc_region *stone_reg = &q->regions[stone];
   struct quirc_region *ring_reg = &q->regions[ring];
@@ -719,6 +794,10 @@ static void record_capstone(struct k_quirc *q, int ring, int stone) {
     return;
   }
   perspective_map(capstone->c, 3.5f, 3.5f, &capstone->center);
+
+#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
+  accumulate_dilation(q, ring, capstone->corners);
+#endif
 }
 
 static void test_capstone(struct k_quirc *q, int x, int y, int *pb) {
@@ -967,29 +1046,6 @@ static int fitness_all(const struct k_quirc *q, int index) {
 }
 
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-static int timing_bias(const struct k_quirc *q, int index) {
-  const struct quirc_grid *qr = &q->grids[index];
-  int bias = 0;
-
-  for (int i = 0; i < qr->grid_size - 14; i++) {
-    int cell_h = fitness_cell(q, index, i + 7, 6);
-    int cell_v = fitness_cell(q, index, 6, i + 7);
-
-    if (i & 1) {
-      if (cell_h < 0)
-        bias++;
-      if (cell_v < 0)
-        bias++;
-    } else {
-      if (cell_h > 0)
-        bias--;
-      if (cell_v > 0)
-        bias--;
-    }
-  }
-  return bias;
-}
-
 static int clamp_threshold_offset(int offset) {
   if (offset > K_QUIRC_THRESHOLD_OFFSET_MAX)
     return K_QUIRC_THRESHOLD_OFFSET_MAX;
@@ -998,13 +1054,44 @@ static int clamp_threshold_offset(int offset) {
   return offset;
 }
 
-static void update_threshold_offset(struct k_quirc *q, int bias) {
-  if (bias > 0)
-    q->threshold_offset++;
-  else if (bias < 0)
-    q->threshold_offset--;
+/*
+ * Close the loop on the finder areas gathered this frame.  The correction is
+ * proportional to the measured error, so the operating point is reached in a
+ * frame or two rather than one gray level at a time -- on an animated QR the
+ * frames spent travelling are payload parts missed.
+ */
+static void update_threshold_offset(struct k_quirc *q) {
+  uint32_t ring = q->dilation_ring;
+  uint32_t white = q->dilation_white;
 
-  q->threshold_offset = clamp_threshold_offset(q->threshold_offset);
+  float den = 4.0f * (float)ring + 6.0f * (float)white;
+  if (den <= 0.0f) {
+    /* Nothing to measure: leak one level towards the default.  Finder
+     * detection itself fails at the extremes of the range, so an offset that
+     * suited one scene can leave the loop unable to see the next; leaking
+     * walks it back until measurement resumes.  At one level per frame a
+     * subject that briefly left the frame loses almost nothing. */
+    if (q->threshold_offset > default_threshold_offset)
+      q->threshold_offset--;
+    else if (q->threshold_offset < default_threshold_offset)
+      q->threshold_offset++;
+    return;
+  }
+
+  /* Steer the measured dilation to zero: the finders then measure the size
+   * they are specified to be.  There is no fitted set point here. */
+  float correction =
+      -K_QUIRC_DILATION_GAIN * (2.0f * (float)ring - 3.0f * (float)white) / den;
+
+  int step = (int)(correction + (correction >= 0.0f ? 0.5f : -0.5f));
+  if (step > -K_QUIRC_THRESHOLD_STEP_MIN && step < K_QUIRC_THRESHOLD_STEP_MIN)
+    return; /* inside the deadband: already at the operating point */
+  if (step > K_QUIRC_THRESHOLD_STEP_MAX)
+    step = K_QUIRC_THRESHOLD_STEP_MAX;
+  else if (step < -K_QUIRC_THRESHOLD_STEP_MAX)
+    step = -K_QUIRC_THRESHOLD_STEP_MAX;
+
+  q->threshold_offset = clamp_threshold_offset(q->threshold_offset + step);
 }
 
 int k_quirc_get_threshold_offset(void) { return default_threshold_offset; }
@@ -1090,12 +1177,6 @@ static int setup_qr_perspective(struct k_quirc *q, int index) {
     return 0;
 
   jiggle_perspective(q, index);
-
-#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-  qr->timing_bias = timing_bias(q, index);
-  if (!q->processing_inverted)
-    update_threshold_offset(q, qr->timing_bias);
-#endif
   return 1;
 }
 
@@ -1394,7 +1475,8 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
     return;
 
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-  q->processing_inverted = false;
+  q->dilation_ring = 0;
+  q->dilation_white = 0;
 #endif
   pixels_setup(q);
   threshold(q, false);
@@ -1402,14 +1484,21 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
   for (int i = 0; i < q->h; i++)
     finder_scan(q, i);
 
+#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
+  /* Every capstone found above has contributed its finder areas.  Correct the
+   * offset now, before grouping: the measurement does not depend on a grid
+   * forming, so a frame that finds finders but fails to group still steers the
+   * next one.  Consuming the sums here is also what keeps the inverted retry
+   * out of them -- it re-thresholds the same frame, and mixing two
+   * binarizations into one measurement would be meaningless. */
+  update_threshold_offset(q);
+#endif
+
   geometric_grouping(q);
 
 #ifdef K_QUIRC_INVERTED_RETRY
   if (q->num_grids == 0 && find_inverted) {
     K_QUIRC_YIELD();
-#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-    q->processing_inverted = true;
-#endif
     q->num_regions = QUIRC_PIXEL_REGION;
     q->num_capstones = 0;
     q->num_grids = 0;
