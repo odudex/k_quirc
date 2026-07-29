@@ -385,8 +385,16 @@ static uint8_t otsu_threshold(uint32_t *histogram, uint32_t total) {
 
   float sumB = 0;
   uint32_t wB = 0;
-  float varMax = 0;
-  uint8_t threshold = 0;
+  float varMax = -1.0f;
+  /* First and last level of the maximum plateau.  A strictly bimodal image
+   * leaves an empty gap between its two levels, and every threshold inside
+   * that gap yields the same partition and therefore the same between-class
+   * variance.  Keeping only the first (or only the last) level would place
+   * the threshold flush against one of the two modes, so a small adaptive
+   * offset is enough to swallow that mode entirely.  Return the midpoint of
+   * the plateau instead, which is the usual Otsu convention. */
+  int lo = 0;
+  int hi = 0;
 
   for (int i = 0; i < 256; i++) {
     wB += histogram[i];
@@ -403,13 +411,18 @@ static uint8_t otsu_threshold(uint32_t *histogram, uint32_t total) {
     float mDiff = mB - mF;
 
     float varBetween = (float)wB * (float)wF * mDiff * mDiff;
-    if (varBetween >= varMax) {
+    if (varBetween > varMax) {
       varMax = varBetween;
-      threshold = i;
+      lo = i;
+      hi = i;
+    } else if (varBetween == varMax) {
+      /* Empty histogram bins leave wB, wF and sumB untouched, so the
+       * comparison is exact for the gap of a bimodal image. */
+      hi = i;
     }
   }
 
-  return threshold;
+  return (uint8_t)((lo + hi) / 2);
 }
 
 // Percentage of image border to ignore for threshold calculation (0.0 - 0.5)
