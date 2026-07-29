@@ -55,6 +55,16 @@ When a sample fails to decode, the harness automatically:
 - **Dumps capstone geometry** if 3+ capstones were found but no grid formed — prints perspective-unmap coordinates and alignment ratios to diagnose grouping failures.
 - **Sweeps threshold offsets** from -20 to +20 (step 5) and reports which offsets would have succeeded, indicating threshold sensitivity.
 
+## Two-Level Images
+
+`k_quirc_bimodal_test` covers strictly bimodal input — a QR rendered on a screen or straight out of a generator, with exactly two grey levels and nothing in between. It quantizes a checked-in vector onto `{51, light}` and sweeps `light`, requiring a decode at every level:
+
+```bash
+./build/k_quirc_bimodal_test [image]
+```
+
+The gap between the two levels makes Otsu's between-class variance flat across a whole range of thresholds, so which end of that plateau the argmax reports decides whether the adaptive offset lands in the gap or on top of a mode. The pgm samples and the validation matrix cannot see this: their light level is a pure 255, where the offset clamps and the failure hides.
+
 ## Automated Validation
 
 The `validation/` directory contains a separate test suite that generates synthetic QR images across a matrix of versions, ECC levels, encoding modes, and scales, then runs them through this harness and validates that every decoded payload matches the expected data. See [`validation/README.md`](validation/README.md) for details.

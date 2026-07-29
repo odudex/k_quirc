@@ -53,6 +53,9 @@ jobs:
           cmake -B build_ci
           cmake --build build_ci
 
+      - name: Run two-level image test
+        run: test/build_ci/k_quirc_bimodal_test
+
       - name: Run validation
         run: >
           python3 test/validation/run_validation.py
