@@ -9,6 +9,9 @@ set(SAMPLES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/pgm_samples)
 # with -DK_QUIRC_SANITIZE=ON rather than switching this one: the validation
 # suite runs the plain binary, which is an order of magnitude faster.
 # Must precede the add_executable() calls to apply to them.
+# Ignoring a K_QUIRC_WARN_UNUSED_RESULT return is a build error, not a warning.
+add_compile_options(-Werror=unused-result)
+
 option(K_QUIRC_SANITIZE "Build the test binaries with ASan and UBSan" OFF)
 if(K_QUIRC_SANITIZE)
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer

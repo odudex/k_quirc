@@ -118,10 +118,10 @@ ALWAYS_INLINE void fill_span(quirc_pixel_t *p, int len, quirc_pixel_t v) {
 /*
  * Linear algebra routines
  */
-static int line_intersect(const struct quirc_point *p0,
-                          const struct quirc_point *p1,
-                          const struct quirc_point *q0,
-                          const struct quirc_point *q1, struct quirc_point *r) {
+static K_QUIRC_WARN_UNUSED_RESULT int
+line_intersect(const struct quirc_point *p0, const struct quirc_point *p1,
+               const struct quirc_point *q0, const struct quirc_point *q1,
+               struct quirc_point *r) {
   int a = -(p1->y - p0->y);
   int b = p1->x - p0->x;
   int c = -(q1->y - q0->y);
@@ -138,8 +138,8 @@ static int line_intersect(const struct quirc_point *p0,
   return 1;
 }
 
-static int perspective_setup(float *c, const struct quirc_point *rect, float w,
-                             float h) {
+static K_QUIRC_WARN_UNUSED_RESULT int
+perspective_setup(float *c, const struct quirc_point *rect, float w, float h) {
   float x0 = rect[0].x;
   float y0 = rect[0].y;
   float x1 = rect[1].x;
@@ -227,8 +227,9 @@ static int solve_8x8_system(float A[8][8], float b[8], float x[8]) {
   return 1;
 }
 
-static int perspective_setup_direct(float *c, const float img[4][2],
-                                    const float mod[4][2]) {
+static K_QUIRC_WARN_UNUSED_RESULT int
+perspective_setup_direct(float *c, const float img[4][2],
+                         const float mod[4][2]) {
   float A[8][8];
   float b[8];
 
@@ -261,8 +262,9 @@ static int perspective_setup_direct(float *c, const float img[4][2],
   return solve_8x8_system(A, b, c);
 }
 
-static int perspective_unmap(const float *c, const struct quirc_point *in,
-                             float *u, float *v) {
+static K_QUIRC_WARN_UNUSED_RESULT int
+perspective_unmap(const float *c, const struct quirc_point *in, float *u,
+                  float *v) {
   float x = in->x;
   float y = in->y;
   float den = -c[0] * c[7] * y + c[1] * c[6] * y +
@@ -1244,9 +1246,9 @@ static void measure_grid_size(struct k_quirc *q, int index) {
   qr->grid_size = 4 * ver + 17;
 }
 
-static int rotate_capstone(struct quirc_capstone *cap,
-                           const struct quirc_point *h0,
-                           const struct quirc_point *hd) {
+static K_QUIRC_WARN_UNUSED_RESULT int
+rotate_capstone(struct quirc_capstone *cap, const struct quirc_point *h0,
+                const struct quirc_point *hd) {
   struct quirc_point copy[4];
   float c[QUIRC_PERSPECTIVE_PARAMS];
   int best = 0;

@@ -29,8 +29,8 @@ static size_t image_bytes(const k_quirc_t *q, size_t elem_size) {
   return (size_t)q->w * (size_t)q->h * elem_size;
 }
 
-static int image_allocation_size(int w, int h, size_t elem_size,
-                                 size_t *out_size) {
+static K_QUIRC_WARN_UNUSED_RESULT int
+image_allocation_size(int w, int h, size_t elem_size, size_t *out_size) {
   if (!out_size || w <= 0 || h <= 0 || w > K_QUIRC_MAX_IMAGE_DIM ||
       h > K_QUIRC_MAX_IMAGE_DIM)
     return -1;

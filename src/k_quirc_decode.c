@@ -529,8 +529,9 @@ static int take_bits(struct datastream *ds, int len) {
 /*
  * Payload decoding
  */
-static int numeric_tuple(struct quirc_data *data, struct datastream *ds,
-                         int bits, int digits) {
+static K_QUIRC_WARN_UNUSED_RESULT int numeric_tuple(struct quirc_data *data,
+                                                    struct datastream *ds,
+                                                    int bits, int digits) {
   int tuple;
   int i;
 

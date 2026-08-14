@@ -8,6 +8,9 @@ idf_component_register(
     PRIV_INCLUDE_DIRS "src"
 )
 
+# Ignoring a K_QUIRC_WARN_UNUSED_RESULT return is a build error, not a warning.
+target_compile_options(${COMPONENT_LIB} PRIVATE -Werror=unused-result)
+
 # Adaptive threshold control loop - adjusts threshold based on timing pattern analysis
 # Comment out to disable
 target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_ADAPTIVE_THRESHOLD)
