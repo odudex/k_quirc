@@ -18,6 +18,23 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/*
+ * K_QUIRC_WARN_UNUSED_RESULT - the compiler warns at any call site that
+ * discards this function's return value.
+ *
+ * Applied to everything that reports failure through its return: the context
+ * allocator, the resize, the frame accessor, the decoders. Ignoring any of
+ * them means running on a NULL buffer or on a frame that was never sized.
+ *
+ * NOTE: under GCC a `(void)` cast does NOT suppress this. To ignore a result
+ * deliberately, consume it with `if (call()) { }` and say why in a comment.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#define K_QUIRC_WARN_UNUSED_RESULT __attribute__((__warn_unused_result__))
+#else
+#define K_QUIRC_WARN_UNUSED_RESULT
+#endif
+
 /* Limits on the maximum size of QR-codes and their content (Max Version 27). */
 #define K_QUIRC_MAX_BITMAP 1954  /* ceil(125*125/8) for version 27 */
 #define K_QUIRC_MAX_PAYLOAD 2560 /* v27 total codewords 1990 < 2560 */
@@ -88,7 +105,7 @@ typedef struct k_quirc k_quirc_t;
  * Create a new QR-code decoder instance.
  * @return Decoder instance or NULL on allocation failure
  */
-k_quirc_t *k_quirc_new(void);
+K_QUIRC_WARN_UNUSED_RESULT k_quirc_t *k_quirc_new(void);
 
 /**
  * Destroy a QR-code decoder instance and free all resources.
@@ -104,7 +121,7 @@ void k_quirc_destroy(k_quirc_t *q);
  * @param h Image height
  * @return 0 on success, -1 on allocation failure
  */
-int k_quirc_resize(k_quirc_t *q, int w, int h);
+K_QUIRC_WARN_UNUSED_RESULT int k_quirc_resize(k_quirc_t *q, int w, int h);
 
 /**
  * Begin decoding - get pointer to grayscale image buffer.
@@ -114,7 +131,7 @@ int k_quirc_resize(k_quirc_t *q, int w, int h);
  * @param h Optional pointer to receive height
  * @return Pointer to grayscale buffer
  */
-uint8_t *k_quirc_begin(k_quirc_t *q, int *w, int *h);
+K_QUIRC_WARN_UNUSED_RESULT uint8_t *k_quirc_begin(k_quirc_t *q, int *w, int *h);
 
 /**
  * End decoding - process the image and detect QR codes.
@@ -129,7 +146,7 @@ void k_quirc_end(k_quirc_t *q, bool find_inverted);
  * @param q Decoder instance
  * @return Number of detected QR codes
  */
-int k_quirc_count(const k_quirc_t *q);
+K_QUIRC_WARN_UNUSED_RESULT int k_quirc_count(const k_quirc_t *q);
 
 /**
  * Decode a specific QR code and get its data.
@@ -138,15 +155,15 @@ int k_quirc_count(const k_quirc_t *q);
  * @param result Pointer to result structure to fill
  * @return K_QUIRC_SUCCESS on success, error code otherwise
  */
-k_quirc_error_t k_quirc_decode(k_quirc_t *q, int index,
-                               k_quirc_result_t *result);
+K_QUIRC_WARN_UNUSED_RESULT k_quirc_error_t
+k_quirc_decode(k_quirc_t *q, int index, k_quirc_result_t *result);
 
 /**
  * Get a human-readable error message.
  * @param err Error code
  * @return Error message string
  */
-const char *k_quirc_strerror(k_quirc_error_t err);
+K_QUIRC_WARN_UNUSED_RESULT const char *k_quirc_strerror(k_quirc_error_t err);
 
 /**
  * Convenience function: Decode QR codes from grayscale image.
@@ -160,9 +177,10 @@ const char *k_quirc_strerror(k_quirc_error_t err);
  * @param find_inverted If true, also try inverted QR codes
  * @return Number of QR codes successfully decoded
  */
-int k_quirc_decode_grayscale(const uint8_t *grayscale_data, int width,
-                             int height, k_quirc_result_t *results,
-                             int max_results, bool find_inverted);
+K_QUIRC_WARN_UNUSED_RESULT int
+k_quirc_decode_grayscale(const uint8_t *grayscale_data, int width, int height,
+                         k_quirc_result_t *results, int max_results,
+                         bool find_inverted);
 
 /* Debug visualization support */
 #ifdef K_QUIRC_DEBUG
