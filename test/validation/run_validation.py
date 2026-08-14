@@ -13,7 +13,7 @@ Prerequisites:
 Usage:
     python3 run_validation.py [OPTIONS]
 
-    With no options, runs the full default matrix (v1-25, all ECC, all modes,
+    With no options, runs the full default matrix (v1-27, all ECC, all modes,
     fixed PPM + 90% fill, 3 iterations per config). Exits 0 if all pass, 1
     if any failure.
 """
@@ -41,7 +41,7 @@ except ImportError:
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
-# ISO 18004 QR Code Capacity Table (versions 1-25)
+# ISO 18004 QR Code Capacity Table (versions 1-27)
 # Source: https://ryanagibson.com/extra/qr-character-limits/
 # CAPACITY[(version, ecc, mode)] = max characters/bytes
 # ---------------------------------------------------------------------------
@@ -172,6 +172,19 @@ CAPACITY = {
     (25, 'M', 'numeric'): 2395, (25, 'M', 'alphanumeric'): 1451, (25, 'M', 'byte'): 997,
     (25, 'Q', 'numeric'): 1718, (25, 'Q', 'alphanumeric'): 1041, (25, 'Q', 'byte'): 715,
     (25, 'H', 'numeric'): 1286, (25, 'H', 'alphanumeric'): 779, (25, 'H', 'byte'): 535,
+    # Version 26
+    (26, 'L', 'numeric'): 3283, (26, 'L', 'alphanumeric'): 1990, (26, 'L', 'byte'): 1367,
+    (26, 'M', 'numeric'): 2544, (26, 'M', 'alphanumeric'): 1542, (26, 'M', 'byte'): 1059,
+    (26, 'Q', 'numeric'): 1804, (26, 'Q', 'alphanumeric'): 1094, (26, 'Q', 'byte'): 751,
+    (26, 'H', 'numeric'): 1425, (26, 'H', 'alphanumeric'): 864, (26, 'H', 'byte'): 593,
+    # Version 27
+    # NOTE: v27 uses the wider character-count indicators of the 27-40 band
+    # (numeric 14 bits, alphanumeric 13), which is why its capacities do not
+    # scale smoothly from v26.
+    (27, 'L', 'numeric'): 3517, (27, 'L', 'alphanumeric'): 2132, (27, 'L', 'byte'): 1465,
+    (27, 'M', 'numeric'): 2701, (27, 'M', 'alphanumeric'): 1637, (27, 'M', 'byte'): 1125,
+    (27, 'Q', 'numeric'): 1933, (27, 'Q', 'alphanumeric'): 1172, (27, 'Q', 'byte'): 805,
+    (27, 'H', 'numeric'): 1501, (27, 'H', 'alphanumeric'): 910, (27, 'H', 'byte'): 625,
 }
 
 # QR alphanumeric character set (45 chars)
@@ -721,8 +734,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="CI validation suite for k_quirc QR decode library.",
     )
-    parser.add_argument('--versions', default='1-25',
-                        help='QR version range, e.g. "1-25" (default: 1-25)')
+    parser.add_argument('--versions', default='1-27',
+                        help='QR version range, e.g. "1-27" (default: 1-27)')
     parser.add_argument('--ecc', default='L,M,Q,H',
                         help='ECC levels, comma-separated (default: L,M,Q,H)')
     parser.add_argument('--modes', default='numeric,alphanumeric,byte',

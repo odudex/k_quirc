@@ -28,7 +28,13 @@
 #define K_QUIRC_ECC_LEVEL_H 2
 #define K_QUIRC_ECC_LEVEL_Q 3
 
-/* QR-code data types. */
+/* QR-code data types.
+ *
+ * These are distinct bits, and k_quirc_data_t.data_type is the OR of every
+ * segment mode present in the symbol - a QR code may mix modes. Test it with
+ * a mask, not equality: `data_type & K_QUIRC_DATA_TYPE_KANJI` is true for any
+ * symbol containing a Kanji segment, whereas `data_type == ..._KANJI` only
+ * matches a symbol that is Kanji and nothing else. */
 #define K_QUIRC_DATA_TYPE_NUMERIC 1
 #define K_QUIRC_DATA_TYPE_ALPHA 2
 #define K_QUIRC_DATA_TYPE_BYTE 4
@@ -45,6 +51,10 @@ typedef enum {
   K_QUIRC_ERROR_DATA_OVERFLOW,
   K_QUIRC_ERROR_DATA_UNDERFLOW,
   K_QUIRC_ERROR_ALLOC_FAILED,
+  /* An ECC-valid symbol whose decoded content is out of range for its
+   * declared mode (e.g. an alphanumeric value with no character mapping).
+   * Appended last so existing numeric values are unchanged. */
+  K_QUIRC_ERROR_INVALID_SYMBOL,
 } k_quirc_error_t;
 
 /* Point structure for corners */

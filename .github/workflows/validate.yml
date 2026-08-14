@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       versions:
-        description: 'QR version range (e.g. 1-6, 1-25)'
-        default: '1-25'
+        description: 'QR version range (e.g. 1-6, 1-27)'
+        default: '1-27'
       ecc:
         description: 'ECC levels (comma-separated)'
         default: 'L,M,Q,H'
@@ -53,13 +53,53 @@ jobs:
           cmake -B build_ci
           cmake --build build_ci
 
+      - name: Run version database invariant test
+        run: test/build_ci/k_quirc_version_db_test
+
+      - name: Run payload decoder test
+        run: test/build_ci/k_quirc_decode_payload_test
+
+      - name: Run API contract test
+        run: test/build_ci/k_quirc_api_test
+
       - name: Run two-level image test
         run: test/build_ci/k_quirc_bimodal_test
+
+      - name: Run threshold convergence test
+        run: test/build_ci/k_quirc_convergence_test
+
+      # The two defects this guards against were invisible to the validation
+      # matrix - one was an out-of-bounds read into adjacent .rodata, the other
+      # a left-shift of a negative value. Neither changes the pass/fail of a
+      # well-formed symbol, so only a sanitizer sees them.
+      - name: Build sanitized harness
+        run: |
+          cd test
+          cmake -B build_asan -DK_QUIRC_SANITIZE=ON
+          cmake --build build_asan
+
+      - name: Run tests under ASan/UBSan
+        run: |
+          test/build_asan/k_quirc_version_db_test
+          test/build_asan/k_quirc_decode_payload_test
+          test/build_asan/k_quirc_api_test
+          test/build_asan/k_quirc_bimodal_test
+          test/build_asan/k_quirc_convergence_test
+
+      # Sanitized sweep over real images. Deliberately a narrow slice of the
+      # matrix below - the point is to put the identify/decode path under the
+      # sanitizers, not to re-run coverage at ~20x the cost.
+      - name: Run sanitized image sweep
+        run: >
+          python3 test/validation/run_validation.py
+          --binary test/build_asan/k_quirc_test
+          --versions 1-6 --ecc L,H --modes numeric,alphanumeric,byte
+          --ppm 5,13 --frames 480 --fill 90 --iterations 1
 
       - name: Run validation
         run: >
           python3 test/validation/run_validation.py
-          --versions ${{ inputs.versions || '1-25' }}
+          --versions ${{ inputs.versions || '1-27' }}
           --ecc ${{ inputs.ecc || 'L,M,Q,H' }}
           --modes ${{ inputs.modes || 'numeric,alphanumeric,byte' }}
           --ppm ${{ inputs.ppm || '3,5,8,13,20' }}
