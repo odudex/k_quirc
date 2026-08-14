@@ -11,23 +11,41 @@
 # (v1 at PPM=3 cases were fixed by the DATA_ECC grid-nudge decode retry
 # and removed from this list.)
 
+# (The 18 v25/Q entries previously listed here were NOT an optics limit -
+# the version DB had .ns=3 instead of .ns=7 for v25 ECC-Q, so every v25/Q
+# symbol de-interleaved at the wrong stride and failed data ECC at every
+# scale. Fixed in k_quirc_version.c; all 36 generated v25/Q cases now pass.
+# test/test_version_db.c guards the table against this class of bug.)
+
 # --- v25 at low computed PPM (large grids in small/medium frames) ---
 v25_M_byte_fill90_640x640
-v25_Q_alphanumeric_fill90_320x320
-v25_Q_alphanumeric_fill90_480x480
-v25_Q_alphanumeric_fill90_640x640
-v25_Q_alphanumeric_ppm03_480x480
-v25_Q_alphanumeric_ppm03_640x640
-v25_Q_alphanumeric_ppm05_640x640
-v25_Q_byte_fill90_320x320
-v25_Q_byte_fill90_480x480
-v25_Q_byte_fill90_640x640
-v25_Q_byte_ppm03_480x480
-v25_Q_byte_ppm03_640x640
-v25_Q_byte_ppm05_640x640
-v25_Q_numeric_fill90_320x320
-v25_Q_numeric_fill90_480x480
-v25_Q_numeric_fill90_640x640
-v25_Q_numeric_ppm03_480x480
-v25_Q_numeric_ppm03_640x640
-v25_Q_numeric_ppm05_640x640
+
+# --- v26/v27 at low computed PPM ---
+# These versions were added to the version DB without CI coverage (the matrix
+# ran 1-25), so these failures were never visible.
+#
+# Every entry is the same corner of the matrix: the largest grids rendered at
+# 90% fill in a 640x640 frame, which is the lowest pixels-per-module the matrix
+# produces - 4.76 for v26 and 4.61 for v27, against 4.92 for the v25 entry
+# above. Identification cannot lock onto the finder patterns there, so these
+# fail with "no grid formed" rather than an ECC error. Which (ecc, mode) cells
+# fall over is payload-dependent, but fully deterministic: payloads are seeded
+# from the case key, so the set below is stable across machines and runs.
+#
+# Verified pre-existing and NOT caused by the identify.c version-range change -
+# restoring the previous clamping behaviour produces a byte-identical failure
+# set over versions 25-27 x L,M,Q,H x 3 modes x 3 frames x 3 iterations.
+v26_Q_byte_fill90_640x640
+v26_H_numeric_fill90_640x640
+v27_L_numeric_fill90_640x640
+v27_L_alphanumeric_fill90_640x640
+v27_L_byte_fill90_640x640
+v27_M_numeric_fill90_640x640
+v27_M_alphanumeric_fill90_640x640
+v27_M_byte_fill90_640x640
+v27_Q_numeric_fill90_640x640
+v27_Q_alphanumeric_fill90_640x640
+v27_Q_byte_fill90_640x640
+v27_H_numeric_fill90_640x640
+v27_H_alphanumeric_fill90_640x640
+v27_H_byte_fill90_640x640

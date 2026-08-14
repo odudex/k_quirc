@@ -65,8 +65,33 @@ When a sample fails to decode, the harness automatically:
 
 The gap between the two levels makes Otsu's between-class variance flat across a whole range of thresholds, so which end of that plateau the argmax reports decides whether the adaptive offset lands in the gap or on top of a mode. The pgm samples and the validation matrix cannot see this: their light level is a pure 255, where the offset clamps and the failure hides.
 
+## Malformed Payloads
+
+`k_quirc_decode_payload_test` drives `decode_payload()` with hand-built bitstreams instead of images, covering symbols that pass Reed-Solomon but carry segment data no real encoder would emit:
+
+```bash
+./build/k_quirc_decode_payload_test
+```
+
+- **Alphanumeric bounds** — the 6-bit tail field holds 0..63 and the 11-bit pair field 0..2047, but the character table has only 45 entries. Values 45/63 and 2025/2047 are asserted to be rejected, 44 and 2024 accepted.
+- **Segment-mode mask** — `data_type` is the OR of every mode present, so `[Kanji][byte]` must report both. Callers reject Kanji by testing that field, and an assignment-per-segment left only the trailing mode visible.
+
+Everything the generator produces is well-formed by construction, so the validation matrix cannot reach either case. The test `#include`s `k_quirc_decode.c` to reach the static segment decoders, which is why that file is not also linked into the target.
+
+## Sanitizers
+
+Configure a second build directory to run the whole harness under ASan and UBSan:
+
+```bash
+cmake -B build_asan -DK_QUIRC_SANITIZE=ON
+cmake --build build_asan
+./build_asan/k_quirc_decode_payload_test
+```
+
+Keep it separate from the plain build — the validation suite runs an order of magnitude slower under sanitizers. UBSan is the half that matters most here: both defects the malformed-payload test covers were invisible to pass/fail (an out-of-bounds read into adjacent `.rodata`, and a left-shift of a negative value), and only a sanitizer reports them.
+
 ## Automated Validation
 
 The `validation/` directory contains a separate test suite that generates synthetic QR images across a matrix of versions, ECC levels, encoding modes, and scales, then runs them through this harness and validates that every decoded payload matches the expected data. See [`validation/README.md`](validation/README.md) for details.
 
-A GitHub Actions workflow at `.github/workflows/validate.yml` runs the full validation on push and PR.
+A GitHub Actions workflow at `.github/workflows/validate.yml` runs the full validation on push and PR, plus a narrow sanitized sweep over the same image path.

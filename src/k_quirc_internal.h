@@ -251,6 +251,17 @@ struct k_quirc {
   struct datastream ds_scratch;
 };
 
+/* Zeroing the optimiser is not allowed to discard.
+ *
+ * Decoded QR payloads are frequently secrets - BIP39 mnemonics, seed entropy,
+ * PSBTs, OTP provisioning URIs - and the scratch buffers above plus the
+ * captured frame hold them in plaintext. A plain memset() before free() is a
+ * dead store that a compiler may legally remove, and explicit_bzero()/
+ * memset_s() are not portably available across the ESP-IDF and host builds
+ * this library targets, so the call is routed through a volatile function
+ * pointer instead. Safe with a NULL pointer or a zero length. */
+void k_quirc_bzero(void *ptr, size_t len);
+
 /*
  * Version info structure
  */

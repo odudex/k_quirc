@@ -13,6 +13,22 @@
 
 #include "k_quirc_internal.h"
 
+/* Indirecting through a volatile pointer stops the compiler from treating the
+ * zeroing as a dead store and eliding it. See k_quirc_internal.h. */
+static void *(*const volatile k_quirc_memset_fn)(void *, int, size_t) = memset;
+
+void k_quirc_bzero(void *ptr, size_t len) {
+  if (ptr && len)
+    k_quirc_memset_fn(ptr, 0, len);
+}
+
+/* Bytes backing q->image / q->pixels for the context's current dimensions. */
+static size_t image_bytes(const k_quirc_t *q, size_t elem_size) {
+  if (!q || q->w <= 0 || q->h <= 0)
+    return 0;
+  return (size_t)q->w * (size_t)q->h * elem_size;
+}
+
 static int image_allocation_size(int w, int h, size_t elem_size,
                                  size_t *out_size) {
   if (!out_size || w <= 0 || h <= 0 || w > K_QUIRC_MAX_IMAGE_DIM ||
@@ -45,12 +61,24 @@ k_quirc_t *k_quirc_new(void) {
 
 void k_quirc_destroy(k_quirc_t *q) {
   if (q) {
-    if (q->image)
+    /* Scrub decoded plaintext and the captured frame before handing the memory
+     * back to the allocator. This runs once per scan session, not per frame -
+     * callers bracket the whole camera loop with k_quirc_new()/_destroy() and
+     * use k_quirc_begin()/_end() per frame - so the cost is immaterial. */
+    if (q->image) {
+      k_quirc_bzero(q->image, image_bytes(q, sizeof(*q->image)));
       K_FREE(q->image);
-    if (q->owns_pixels && q->pixels)
+    }
+    if (q->owns_pixels && q->pixels) {
+      k_quirc_bzero(q->pixels, image_bytes(q, sizeof(*q->pixels)));
       K_FREE(q->pixels);
+    }
+    /* flood_fill_stack holds only coordinates, never payload bytes. */
     if (q->flood_fill_stack)
       K_FREE(q->flood_fill_stack);
+    k_quirc_bzero(&q->code_scratch, sizeof(q->code_scratch));
+    k_quirc_bzero(&q->data_scratch, sizeof(q->data_scratch));
+    k_quirc_bzero(&q->ds_scratch, sizeof(q->ds_scratch));
     K_FREE(q);
   }
 }
@@ -91,10 +119,16 @@ int k_quirc_resize(k_quirc_t *q, int w, int h) {
     }
   }
 
-  if (q->image)
+  /* q->w/q->h still describe the outgoing buffers here - they are updated
+   * below - so this scrubs the previous frame at its own dimensions. */
+  if (q->image) {
+    k_quirc_bzero(q->image, image_bytes(q, sizeof(*q->image)));
     K_FREE(q->image);
-  if (q->owns_pixels && q->pixels)
+  }
+  if (q->owns_pixels && q->pixels) {
+    k_quirc_bzero(q->pixels, image_bytes(q, sizeof(*q->pixels)));
     K_FREE(q->pixels);
+  }
 
   q->image = new_image;
   if (sizeof(*q->image) == sizeof(*q->pixels)) {
@@ -209,6 +243,13 @@ k_quirc_error_t k_quirc_decode(k_quirc_t *q, int index,
     result->data.payload[result->data.payload_len] = 0;
   }
 
+  /* The payload now lives in the caller's result, which it is responsible for
+   * clearing. Drop our copies rather than leaving them resident in the context
+   * for the remainder of the scan session. quirc_decode_internal() zeroes both
+   * on entry, so this only shortens the window - it changes no behaviour. */
+  k_quirc_bzero(data, sizeof(*data));
+  k_quirc_bzero(ds, sizeof(*ds));
+
   return err;
 }
 
@@ -222,7 +263,8 @@ const char *k_quirc_strerror(k_quirc_error_t err) {
       [K_QUIRC_ERROR_UNKNOWN_DATA_TYPE] = "Unknown data type",
       [K_QUIRC_ERROR_DATA_OVERFLOW] = "Data overflow",
       [K_QUIRC_ERROR_DATA_UNDERFLOW] = "Data underflow",
-      [K_QUIRC_ERROR_ALLOC_FAILED] = "Memory allocation failed"};
+      [K_QUIRC_ERROR_ALLOC_FAILED] = "Memory allocation failed",
+      [K_QUIRC_ERROR_INVALID_SYMBOL] = "Invalid symbol for data type"};
 
   if (err >= 0 && err < sizeof(error_table) / sizeof(error_table[0]))
     return error_table[err];

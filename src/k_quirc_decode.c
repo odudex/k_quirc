@@ -582,7 +582,12 @@ static k_quirc_error_t decode_numeric(struct quirc_data *data,
   return K_QUIRC_SUCCESS;
 }
 
-static const char *alpha_map = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
+/* The alphanumeric character set has exactly 45 entries. Declaring the array
+ * with an explicit bound makes a too-long literal a compile error, and gives
+ * the range checks in decode_alpha() a single source of truth. */
+#define ALPHA_MAP_LEN 45
+static const char alpha_map[ALPHA_MAP_LEN + 1] =
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
 
 static k_quirc_error_t decode_alpha(struct quirc_data *data,
                                     struct datastream *ds) {
@@ -605,8 +610,13 @@ static k_quirc_error_t decode_alpha(struct quirc_data *data,
       return K_QUIRC_ERROR_DATA_UNDERFLOW;
 
     d = take_bits(ds, 11);
-    data->payload[data->payload_len++] = alpha_map[d / 45];
-    data->payload[data->payload_len++] = alpha_map[d % 45];
+    /* 11 bits hold 0..2047, but only 0..2024 encode a valid character pair.
+     * Values above that would index alpha_map[45], its NUL terminator, and
+     * splice an embedded NUL into a payload callers treat as a C string. */
+    if (d >= ALPHA_MAP_LEN * ALPHA_MAP_LEN)
+      return K_QUIRC_ERROR_INVALID_SYMBOL;
+    data->payload[data->payload_len++] = alpha_map[d / ALPHA_MAP_LEN];
+    data->payload[data->payload_len++] = alpha_map[d % ALPHA_MAP_LEN];
     count -= 2;
   }
 
@@ -617,6 +627,11 @@ static k_quirc_error_t decode_alpha(struct quirc_data *data,
       return K_QUIRC_ERROR_DATA_UNDERFLOW;
 
     d = take_bits(ds, 6);
+    /* 6 bits hold 0..63 but the map has only 45 entries: without this check
+     * values 45..63 read up to 18 bytes past the array and copy them into
+     * the decoded payload. */
+    if (d >= ALPHA_MAP_LEN)
+      return K_QUIRC_ERROR_INVALID_SYMBOL;
     data->payload[data->payload_len++] = alpha_map[d];
   }
 
@@ -735,14 +750,22 @@ static k_quirc_error_t decode_payload(struct quirc_data *data,
       break;
 
     default:
+      /* The 0000 terminator lands here, as do the reserved mode indicators.
+       * Treating both as end-of-data matches upstream quirc: erroring would
+       * break symbols whose data exactly fills the capacity, leaving no room
+       * for a terminator. */
       goto done;
     }
 
     if (err)
       return err;
 
+    /* Accumulate rather than assign. The mode constants are distinct bits, and
+     * a symbol may carry several segments; overwriting left only the last
+     * non-ECI mode visible, so a Kanji segment followed by any other segment
+     * reported the trailing mode and slipped past callers that reject Kanji. */
     if (type != 7)
-      data->data_type = type;
+      data->data_type |= type;
   }
 done:
 

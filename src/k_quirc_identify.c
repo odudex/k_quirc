@@ -5,6 +5,8 @@
 
 #include "k_quirc_internal.h"
 
+#define TAG "k_quirc"
+
 /*
  * LIFO (stack) for flood-fill — uses persistent buffer from struct k_quirc
  */
@@ -506,12 +508,17 @@ static void threshold(struct k_quirc *q, bool inverted) {
   int t_bl = t_quad[2];
   int t_br = t_quad[3];
 
-  /* Fixed-point 16.16 bilinear interpolation — all integer math */
+  /* Fixed-point 16.16 bilinear interpolation — all integer math.
+   * Scale by multiplication, not <<: the quadrant differences are signed and
+   * left-shifting a negative value is undefined in C99/C11. clamp_threshold()
+   * bounds every t_* to 0..255, so the products stay within +/-16711680 and
+   * cannot overflow int32 - no need for the int64_t widening used further
+   * down, which would cost a 64-bit divide on a 32-bit core. */
   int inv_h_dim = (h > 1) ? h - 1 : 1;
-  int tl_fp = t_tl << 16;
-  int tr_fp = t_tr << 16;
-  int dl_fp = ((t_bl - t_tl) << 16) / inv_h_dim;
-  int dr_fp = ((t_br - t_tr) << 16) / inv_h_dim;
+  int tl_fp = t_tl * 65536;
+  int tr_fp = t_tr * 65536;
+  int dl_fp = ((t_bl - t_tl) * 65536) / inv_h_dim;
+  int dr_fp = ((t_br - t_tr) * 65536) / inv_h_dim;
 
   int inv_w_dim = (w > 1) ? w - 1 : 1;
 
@@ -1221,8 +1228,18 @@ static void measure_grid_size(struct k_quirc *q, int index) {
   float grid_size_estimate = (ver_grid + hor_grid) * 0.5f;
 
   int ver = (int)((grid_size_estimate - 15.0f) * 0.25f);
-  if (ver > QUIRC_MAX_VERSION)
-    ver = QUIRC_MAX_VERSION;
+  if (ver > QUIRC_MAX_VERSION) {
+    /* Reject rather than clamp. Clamping produced a QUIRC_MAX_VERSION grid for
+     * a symbol that is physically larger, so sampling ran on the wrong lattice
+     * and the code failed data ECC after a full Reed-Solomon pass - a silent
+     * misread dressed up as a decode failure. Dropping the candidate here
+     * reports nothing and skips that wasted work. Callers treat grid_size 0 as
+     * "no grid" via the < 21 test in record_qr_grid(). */
+    K_QUIRC_LOGD(TAG, "QR version %d exceeds supported maximum %d", ver,
+                 QUIRC_MAX_VERSION);
+    qr->grid_size = 0;
+    return;
+  }
 
   qr->grid_size = 4 * ver + 17;
 }
