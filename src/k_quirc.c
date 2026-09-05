@@ -22,13 +22,6 @@ void k_quirc_bzero(void *ptr, size_t len) {
     k_quirc_memset_fn(ptr, 0, len);
 }
 
-/* Bytes backing q->image / q->pixels for the context's current dimensions. */
-static size_t image_bytes(const k_quirc_t *q, size_t elem_size) {
-  if (!q || q->w <= 0 || q->h <= 0)
-    return 0;
-  return (size_t)q->w * (size_t)q->h * elem_size;
-}
-
 static K_QUIRC_WARN_UNUSED_RESULT int
 image_allocation_size(int w, int h, size_t elem_size, size_t *out_size) {
   if (!out_size || w <= 0 || h <= 0 || w > K_QUIRC_MAX_IMAGE_DIM ||
@@ -66,11 +59,11 @@ void k_quirc_destroy(k_quirc_t *q) {
      * callers bracket the whole camera loop with k_quirc_new()/_destroy() and
      * use k_quirc_begin()/_end() per frame - so the cost is immaterial. */
     if (q->image) {
-      k_quirc_bzero(q->image, image_bytes(q, sizeof(*q->image)));
+      k_quirc_bzero(q->image, q->image_capacity * sizeof(*q->image));
       K_FREE(q->image);
     }
     if (q->owns_pixels && q->pixels) {
-      k_quirc_bzero(q->pixels, image_bytes(q, sizeof(*q->pixels)));
+      k_quirc_bzero(q->pixels, q->image_capacity * sizeof(*q->pixels));
       K_FREE(q->pixels);
     }
     /* flood_fill_stack holds only coordinates, never payload bytes. */
@@ -91,6 +84,21 @@ int k_quirc_resize(k_quirc_t *q, int w, int h) {
 
   if (!q || image_allocation_size(w, h, sizeof(uint8_t), &image_size) < 0)
     return -1;
+
+  if (image_size <= q->image_capacity) {
+    size_t old_size = (size_t)q->w * (size_t)q->h;
+    if (image_size < old_size) {
+      /* The next frame overwrites the active prefix. Clear the discarded tail
+       * now so shrinking an ROI does not retain the previous frame there. */
+      k_quirc_bzero(q->image + image_size, old_size - image_size);
+      if (q->owns_pixels)
+        k_quirc_bzero(q->pixels + image_size,
+                      (old_size - image_size) * sizeof(*q->pixels));
+    }
+    q->w = w;
+    q->h = h;
+    return 0;
+  }
 
   new_image = K_MALLOC_IMAGE(image_size);
   if (!new_image)
@@ -119,18 +127,18 @@ int k_quirc_resize(k_quirc_t *q, int w, int h) {
     }
   }
 
-  /* q->w/q->h still describe the outgoing buffers here - they are updated
-   * below - so this scrubs the previous frame at its own dimensions. */
+  /* Capacity still describes the outgoing buffers, including any ROI tail. */
   if (q->image) {
-    k_quirc_bzero(q->image, image_bytes(q, sizeof(*q->image)));
+    k_quirc_bzero(q->image, q->image_capacity * sizeof(*q->image));
     K_FREE(q->image);
   }
   if (q->owns_pixels && q->pixels) {
-    k_quirc_bzero(q->pixels, image_bytes(q, sizeof(*q->pixels)));
+    k_quirc_bzero(q->pixels, q->image_capacity * sizeof(*q->pixels));
     K_FREE(q->pixels);
   }
 
   q->image = new_image;
+  q->image_capacity = image_size;
   if (sizeof(*q->image) == sizeof(*q->pixels)) {
     q->pixels = (quirc_pixel_t *)q->image;
     q->owns_pixels = false;

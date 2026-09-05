@@ -227,6 +227,7 @@ struct datastream {
 struct k_quirc {
   uint8_t *image;
   quirc_pixel_t *pixels;
+  size_t image_capacity; /* Allocated pixels; independent of active w/h. */
   uint8_t *flood_fill_stack;
   bool owns_pixels;
   bool flood_fill_overflow;

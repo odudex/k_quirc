@@ -55,6 +55,20 @@ When a sample fails to decode, the harness automatically:
 - **Dumps capstone geometry** if 3+ capstones were found but no grid formed — prints perspective-unmap coordinates and alignment ratios to diagnose grouping failures.
 - **Sweeps threshold offsets** from -20 to +20 (step 5) and reports which offsets would have succeeded, indicating threshold sensitivity.
 
+## Capacity and ROI Transitions
+
+`k_quirc_resize_254_test` and `k_quirc_resize_1024_test` cover shared 8-bit
+image/label storage and separate 16-bit label storage. They verify that resizing
+within capacity makes no image allocations, invalid sizes and failed growth
+preserve the context, shrinking clears discarded pixels, and growth/destruction
+scrub the full allocation. Repeated full-frame/ROI decoding of a checked-in QR
+must match a fresh decoder's results.
+
+Run all self-contained regressions with `ctest --test-dir build --output-on-failure`
+after building. No external samples are needed. From the Kern repository root,
+`just test` builds and runs them alongside the other host tests; configure with
+`-DK_QUIRC_SANITIZE=ON` for ASan/UBSan.
+
 ## Two-Level Images
 
 `k_quirc_bimodal_test` covers strictly bimodal input — a QR rendered on a screen or straight out of a generator, with exactly two grey levels and nothing in between. It quantizes a checked-in vector onto `{51, light}` and sweeps `light`, requiring a decode at every level:
