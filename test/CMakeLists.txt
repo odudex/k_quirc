@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(k_quirc_test C)
+enable_testing()
 
 set(K_QUIRC_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 set(K_QUIRC_INC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../include)
@@ -140,3 +141,31 @@ target_compile_definitions(k_quirc_decode_payload_test PRIVATE
 target_compile_options(k_quirc_decode_payload_test PRIVATE
     -Wall -Wextra -Wno-unused-function -O2)
 target_link_libraries(k_quirc_decode_payload_test m)
+
+# Exercise both the default shared image/pixel buffer and separate 16-bit labels.
+# test_resize.c includes k_quirc.c to instrument its allocations and frees.
+foreach(regions IN ITEMS 254 1024)
+    set(target k_quirc_resize_${regions}_test)
+    add_executable(${target}
+        test_resize.c
+        ${K_QUIRC_SRC_DIR}/k_quirc_version.c
+        ${K_QUIRC_SRC_DIR}/k_quirc_identify.c
+        ${K_QUIRC_SRC_DIR}/k_quirc_decode.c
+    )
+    target_include_directories(${target} PRIVATE ${K_QUIRC_INC_DIR} ${K_QUIRC_SRC_DIR})
+    target_compile_definitions(${target} PRIVATE
+        QUIRC_MAX_REGIONS=${regions}
+        K_QUIRC_ADAPTIVE_THRESHOLD
+        K_QUIRC_BILINEAR_THRESHOLD
+        RESIZE_VECTOR="${CMAKE_CURRENT_SOURCE_DIR}/convergence/vectors/cv_v06_ppm08_sig000_ev00_ink00_gr00_tilt00.png"
+    )
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wno-unused-function -O2)
+    target_link_libraries(${target} m)
+    add_test(NAME ${target} COMMAND ${target})
+endforeach()
+
+add_test(NAME api COMMAND k_quirc_api_test)
+add_test(NAME version_db COMMAND k_quirc_version_db_test)
+add_test(NAME decode_payload COMMAND k_quirc_decode_payload_test)
+add_test(NAME bimodal COMMAND k_quirc_bimodal_test)
+add_test(NAME convergence COMMAND k_quirc_convergence_test --min-lock 10 --min-yield 100)
