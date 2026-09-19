@@ -16,6 +16,14 @@ case "$mode" in
     ;;
 esac
 
+# Output drifts between clang-format majors, so one is pinned.
+CLANG_FORMAT="${CLANG_FORMAT:-clang-format}"
+major=$("$CLANG_FORMAT" --version | sed -n 's/.*clang-format version \([0-9]*\).*/\1/p')
+if [ "$major" != "21" ]; then
+  echo "clang-format 21 required (pip install 'clang-format==21.1.*'), found: $("$CLANG_FORMAT" --version)" >&2
+  exit 1
+fi
+
 files=$(
   find include src -type f \( -name '*.c' -o -name '*.h' \)
   find test -maxdepth 1 -type f -name '*.c'
@@ -26,4 +34,4 @@ if [ -z "$files" ]; then
 fi
 
 # shellcheck disable=SC2086
-clang-format $clang_format_args $files
+"$CLANG_FORMAT" $clang_format_args $files

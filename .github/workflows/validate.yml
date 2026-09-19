@@ -41,8 +41,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get install -y clang-format qrencode
-          pip install -r test/validation/requirements.txt
+          sudo apt-get install -y qrencode
+          pip install 'clang-format==21.1.*' -r test/validation/requirements.txt
 
       - name: Check formatting
         run: ./scripts/format.sh check
