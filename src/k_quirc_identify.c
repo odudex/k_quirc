@@ -17,17 +17,6 @@ typedef struct {
   size_t capacity;
 } lifo_t;
 
-ALWAYS_INLINE int lifo_push(lifo_t *s, const xylf_t *item) {
-  if (s->len >= s->capacity)
-    return 0;
-  s->data[s->len++] = *item;
-  return 1;
-}
-
-ALWAYS_INLINE void lifo_pop(lifo_t *s, xylf_t *item) {
-  *item = s->data[--s->len];
-}
-
 /*
  * Pixel-row scanning primitives.  The fast paths process 4 pixels per
  * iteration; they require byte-sized pixels and a little-endian target
@@ -363,58 +352,54 @@ static void flood_fill_seed(struct k_quirc *q, struct quirc_region *reg,
     }
 
     for (;;) {
+      /* What to come back to, should a neighbour row need filling */
       bool recurse = false;
+      xylf_t context = {0, (int16_t)y, (int16_t)left, (int16_t)right};
 
-      if (lifo.len < lifo.capacity) {
-        if (scan >= 0) {
-          if (y > 0) {
-            const quirc_pixel_t *row = q->pixels + (y - 1) * q->w;
-            int i = row_find_pixel(row, scan, right, from_color);
-            if (i >= 0) {
-              xylf_t context = {(int16_t)(i + 1), (int16_t)y, (int16_t)left,
-                                (int16_t)right};
-              if (!lifo_push(&lifo, &context))
-                return;
-              x = i;
-              y = y - 1;
-              recurse = true;
-            }
-          }
-          if (!recurse)
-            scan = -left - 1; /* row above done; switch to the row below */
-        }
-
-        if (!recurse && scan < 0 && y < q->h - 1) {
-          const quirc_pixel_t *row = q->pixels + (y + 1) * q->w;
-          int i = row_find_pixel(row, -scan - 1, right, from_color);
-          if (i >= 0) {
-            xylf_t context = {(int16_t)(-i - 2), (int16_t)y, (int16_t)left,
-                              (int16_t)right};
-            if (!lifo_push(&lifo, &context))
-              return;
-            x = i;
-            y = y + 1;
-            recurse = true;
-          }
-        }
-      } else {
+      if (lifo.len >= lifo.capacity) {
         reg->count = 0; /* out of stack */
         return;
       }
 
-      if (!recurse) {
-        if (!lifo.len)
-          return;
+      if (scan >= 0) {
+        if (y > 0) {
+          const quirc_pixel_t *row = q->pixels + (y - 1) * q->w;
+          int i = row_find_pixel(row, scan, right, from_color);
+          if (i >= 0) {
+            context.x = (int16_t)(i + 1);
+            x = i;
+            y = y - 1;
+            recurse = true;
+          }
+        }
+        if (!recurse)
+          scan = -left - 1; /* row above done; switch to the row below */
+      }
 
-        xylf_t context;
-        lifo_pop(&lifo, &context);
-        scan = context.x;
-        y = context.y;
-        left = context.l;
-        right = context.r;
-      } else {
+      if (!recurse && scan < 0 && y < q->h - 1) {
+        const quirc_pixel_t *row = q->pixels + (y + 1) * q->w;
+        int i = row_find_pixel(row, -scan - 1, right, from_color);
+        if (i >= 0) {
+          context.x = (int16_t)(-i - 2);
+          x = i;
+          y = y + 1;
+          recurse = true;
+        }
+      }
+
+      if (recurse) {
+        lifo.data[lifo.len++] = context;
         break;
       }
+
+      if (!lifo.len)
+        return;
+
+      context = lifo.data[--lifo.len];
+      scan = context.x;
+      y = context.y;
+      left = context.l;
+      right = context.r;
     }
   }
 }
