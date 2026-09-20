@@ -929,7 +929,35 @@ static void find_alignment_pattern(struct k_quirc *q, int index) {
     return;
   perspective_map(c2->c, u + 1.0f, v, &c);
 
-  size_estimate = abs((a.x - b.x) * -(c.y - b.y) + (a.y - b.y) * (c.x - b.x));
+  /* a - b and c - b are one module each, so their cross product is a module's
+   * area, and the search below covers a hundred of those around the estimate.
+   *
+   * None of this is trustworthy. When the capstone edges that locate the
+   * estimate are near-parallel, their intersection lies far outside the image
+   * and the perspective maps report a module of tens of millions of pixels.
+   * Times 100 that overflows, and the spiral then walks about a billion pixels
+   * that do not exist: minutes on an embedded target, from any frame that
+   * happens to contain three capstone-like blobs.
+   *
+   * No module of a decodable code is larger than a hundredth of the image (a
+   * version 2 code, the smallest with an alignment pattern, would have to be
+   * 2.5 times as wide as the frame), which also bounds the search to the
+   * image's own area. */
+  int64_t limit = (int64_t)q->w + q->h;
+  int64_t ax = (int64_t)a.x - b.x;
+  int64_t ay = (int64_t)a.y - b.y;
+  int64_t cx = (int64_t)c.x - b.x;
+  int64_t cy = (int64_t)c.y - b.y;
+  if (ax > limit || ax < -limit || ay > limit || ay < -limit || cx > limit ||
+      cx < -limit || cy > limit || cy < -limit)
+    return;
+
+  int64_t module_area = ax * -cy + ay * cx;
+  if (module_area < 0)
+    module_area = -module_area;
+  if (module_area > (int64_t)q->w * q->h / 100)
+    return;
+  size_estimate = (int)module_area;
 
   while (step_size * step_size < size_estimate * 100) {
     static const int dx_map[] = {1, 0, -1, 0};
