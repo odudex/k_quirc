@@ -451,23 +451,48 @@ static inline int clamp_threshold(int t) {
   return (t < 0) ? 0 : (t > 255) ? 255 : t;
 }
 
-/* Binarize a span of pixels against a constant threshold.  Branch-free
- * body with no floating point: this is the SIMD-friendly kernel (an
- * ESP32-P4 PIE implementation can process 16 pixels per instruction). */
+/* Binarize a span against a constant threshold, t in 0..255, four pixels at
+ * a time.  With H the top bit of every byte, (v | H) - (t & ~H) cannot borrow
+ * between bytes and leaves in each top bit whether the pixel's low seven bits
+ * reach the threshold's; the two top bits settle the rest. */
 ALWAYS_INLINE void binarize_span(quirc_pixel_t *p, int len, int t,
                                  uint8_t xor_mask) {
-  for (int i = 0; i < len; i++)
+  int i = 0;
+
+  if (K_QUIRC_LE_WORD_SCAN && sizeof(quirc_pixel_t) == 1) {
+    const uint32_t H = 0x80808080u;
+    const uint32_t mask = xor_mask * 0x01010101u;
+    const uint32_t t_low = (uint32_t)(t & 0x7f) * 0x01010101u;
+    const uint32_t t_high = (t & 0x80) ? ~(uint32_t)0 : 0;
+
+    for (; i + 4 <= len; i += 4) {
+      uint32_t v;
+      memcpy(&v, p + i, 4);
+      v ^= mask;
+      uint32_t reaches = (v | H) - t_low;
+      uint32_t below = (~v & ~reaches) | (t_high & ~(v & reaches));
+      v = (below & H) >> 7;
+      memcpy(p + i, &v, 4);
+    }
+  }
+  for (; i < len; i++)
     p[i] = ((p[i] ^ xor_mask) < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
 }
 
-static void histogram_rect(const quirc_pixel_t *pixels, int stride, int x0,
-                           int y0, int x1, int y1, uint32_t *hist) {
+/* Histogram of every other pixel of every other row, which places Otsu's
+ * threshold just as well.  Returns the number of samples. */
+static uint32_t histogram_rect(const quirc_pixel_t *pixels, int stride, int x0,
+                               int y0, int x1, int y1, uint32_t *hist) {
+  uint32_t samples = 0;
+
   memset(hist, 0, 256 * sizeof(uint32_t));
-  for (int y = y0; y < y1; y++) {
+  for (int y = y0; y < y1; y += 2) {
     const quirc_pixel_t *row = pixels + y * stride;
-    for (int x = x0; x < x1; x++)
+    for (int x = x0; x < x1; x += 2)
       hist[row[x]]++;
+    samples += (uint32_t)(x1 - x0 + 1) / 2;
   }
+  return samples;
 }
 
 HOT_FUNC
@@ -494,7 +519,6 @@ static void threshold(struct k_quirc *q, bool inverted) {
   /* Process one quadrant at a time: a single 1 KB histogram on the stack
    * instead of four (4 KB), and better cache locality. */
   uint32_t hist[256];
-  uint32_t quad_pixels = (uint32_t)half_w * half_h;
   int t_quad[4]; /* tl, tr, bl, br */
   static const struct {
     uint8_t left, top;
@@ -506,12 +530,12 @@ static void threshold(struct k_quirc *q, bool inverted) {
     int y0 = quad_map[qi].top ? sample_start_y : mid_y;
     int y1 = quad_map[qi].top ? mid_y : sample_end_y;
 
-    histogram_rect(pixels, w, x0, y0, x1, y1, hist);
+    uint32_t samples = histogram_rect(pixels, w, x0, y0, x1, y1, hist);
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-    t_quad[qi] = clamp_threshold(otsu_threshold(hist, quad_pixels) +
-                                 q->threshold_offset);
+    t_quad[qi] =
+        clamp_threshold(otsu_threshold(hist, samples) + q->threshold_offset);
 #else
-    t_quad[qi] = otsu_threshold(hist, quad_pixels);
+    t_quad[qi] = otsu_threshold(hist, samples);
 #endif
   }
 
@@ -578,10 +602,9 @@ static void threshold(struct k_quirc *q, bool inverted) {
   int sample_end_y = h - margin_y;
 
   uint32_t histogram[256];
-  histogram_rect(pixels, w, sample_start_x, sample_start_y, sample_end_x,
-                 sample_end_y, histogram);
-  uint32_t sampled_pixels = (uint32_t)(sample_end_x - sample_start_x) *
-                            (uint32_t)(sample_end_y - sample_start_y);
+  uint32_t sampled_pixels =
+      histogram_rect(pixels, w, sample_start_x, sample_start_y, sample_end_x,
+                     sample_end_y, histogram);
 
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
   uint8_t t = clamp_threshold(otsu_threshold(histogram, sampled_pixels) +
