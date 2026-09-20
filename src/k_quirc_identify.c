@@ -1209,8 +1209,12 @@ static int fitness_all(const struct k_quirc *q, int index) {
     score += fitness_apat(q, c, info->apat[i], 6);
   }
 
-  for (int i = 1; i < ap_count; i++)
-    for (int j = 1; j < ap_count; j++)
+  /* Up to 36 inner patterns over-determine an eight-parameter map; every
+   * other one will do, counted back from the far corner, whose pattern is the
+   * only anchor there. */
+  int stride = (ap_count >= 4) ? 2 : 1;
+  for (int i = ap_count - 1; i >= 1; i -= stride)
+    for (int j = ap_count - 1; j >= 1; j -= stride)
       score += fitness_apat(q, c, info->apat[i], info->apat[j]);
 
   return score;
