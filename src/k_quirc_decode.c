@@ -869,31 +869,38 @@ void quirc_extract_nudged(const struct k_quirc *q, int index,
   const float inv_gs2 = 1.0f / ((float)qr->grid_size * (float)qr->grid_size);
   int i = 0;
   for (int y = 0; y < qr->grid_size; y++) {
-    /* Hoist the v-dependent terms of the perspective map out of the row */
+    /* Along a row the map's numerators and denominator advance by additions.
+     * Half a denominator is folded into the numerators, which rounds the
+     * quotient; the reciprocal follows its neighbour's by a Newton step, the
+     * denominator moving by a fraction of a percent per cell. */
     float vy = y + 0.5f;
-    float den_v = c[7] * vy + 1.0f;
-    float nx_v = c[1] * vy + c[2];
-    float ny_v = c[4] * vy + c[5];
+    float den = c[6] * 0.5f + c[7] * vy + 1.0f;
+    float mx = c[0] * 0.5f + c[1] * vy + c[2] + 0.5f * den;
+    float my = c[3] * 0.5f + c[4] * vy + c[5] + 0.5f * den;
+    float mx_step = c[0] + 0.5f * c[6];
+    float my_step = c[3] + 0.5f * c[6];
+    float inv = 1.0f / den;
 
     for (int x = 0; x < qr->grid_size; x++) {
-      float ux = x + 0.5f;
-      float inv, mx, my;
+      int px, py;
       if (!nudged) {
-        inv = 1.0f / (c[6] * ux + den_v);
-        mx = c[0] * ux + nx_v;
-        my = c[3] * ux + ny_v;
+        inv *= 2.0f - den * inv;
+        px = (int)(mx * inv);
+        py = (int)(my * inv);
+        mx += mx_step;
+        my += my_step;
+        den += c[6];
       } else {
         /* Weight grows towards the extrapolated corner (grid_size,
          * grid_size); retry-only path, so the extra math is fine. */
+        float ux = x + 0.5f;
         float wgt = ux * vy * inv_gs2;
         float un = ux + du * wgt;
         float vn = vy + dv * wgt;
-        inv = 1.0f / (c[6] * un + c[7] * vn + 1.0f);
-        mx = c[0] * un + c[1] * vn + c[2];
-        my = c[3] * un + c[4] * vn + c[5];
+        float d = 1.0f / (c[6] * un + c[7] * vn + 1.0f);
+        px = fast_roundf((c[0] * un + c[1] * vn + c[2]) * d);
+        py = fast_roundf((c[3] * un + c[4] * vn + c[5]) * d);
       }
-      int px = fast_roundf(mx * inv);
-      int py = fast_roundf(my * inv);
 
       if (py >= 0 && py < h && px >= 0 && px < w) {
         if (q->pixels[py * w + px])
