@@ -884,12 +884,15 @@ static void record_capstone(struct k_quirc *q, int ring, int stone) {
 #endif
 }
 
-/* Length of the dark (or light) run from (x, y) along dy, excluding (x, y) */
-static int column_run(const struct k_quirc *q, int x, int y, int dy,
-                      bool dark) {
+/* Length of the dark (or light) run from (x, y) along (dx, dy), excluding
+ * (x, y) itself */
+static int line_run(const struct k_quirc *q, int x, int y, int dx, int dy,
+                    bool dark) {
   const quirc_pixel_t *p = q->pixels + y * q->w + x;
-  int stride = dy * q->w;
-  int room = (dy > 0) ? q->h - 1 - y : y;
+  int stride = dy * q->w + dx;
+  int room_x = dx > 0 ? q->w - 1 - x : dx < 0 ? x : INT_MAX;
+  int room_y = dy > 0 ? q->h - 1 - y : dy < 0 ? y : INT_MAX;
+  int room = room_x < room_y ? room_x : room_y;
   int n = 0;
 
   while (n < room && (p[stride] != QUIRC_PIXEL_WHITE) == dark) {
@@ -899,21 +902,30 @@ static int column_run(const struct k_quirc *q, int x, int y, int dy,
   return n;
 }
 
-/* Does the column through a candidate's stone read 1:1:3:1:1 too?  Dense data
- * matches a row by chance hundreds of times a frame; each match cost flood
- * fills and region labels, until none were left for the finders further down.
- * The runs are judged against their span of seven modules, which a fattened
+/* Does the line through (x, y) along (dx, dy) read a finder's 1:1:3:1:1, with
+ * (x, y) in the stone?  `mid` gets the stone's middle, in steps from (x, y).
+ *
+ * Dense data matches a row by chance hundreds of times a frame; each match
+ * cost flood fills and region labels, until none were left for the finders
+ * further down.  But a finder is concentric squares, so every line through
+ * its centre shows the same ratio, and data rarely does that four times.  The
+ * runs are judged against their span of seven modules, which a fattened
  * binarization leaves alone, and loosely: a finder two pixels to the module
  * quantizes badly. */
-static bool capstone_column_check(const struct k_quirc *q, int x, int y) {
-  int run[5]; /* ring, gap, stone, gap, ring: top to bottom */
-  int up = column_run(q, x, y, -1, true);
-  int down = column_run(q, x, y, 1, true);
-  run[2] = up + down + 1;
-  run[1] = column_run(q, x, y - up, -1, false);
-  run[3] = column_run(q, x, y + down, 1, false);
-  run[0] = column_run(q, x, y - up - run[1], -1, true);
-  run[4] = column_run(q, x, y + down + run[3], 1, true);
+static bool finder_cross_section(const struct k_quirc *q, int x, int y, int dx,
+                                 int dy, int *mid) {
+  int run[5]; /* ring, gap, stone, gap, ring */
+  int back = line_run(q, x, y, -dx, -dy, true);
+  int fwd = line_run(q, x, y, dx, dy, true);
+  int bx = x - back * dx, by = y - back * dy;
+  int fx = x + fwd * dx, fy = y + fwd * dy;
+
+  run[2] = back + fwd + 1;
+  run[1] = line_run(q, bx, by, -dx, -dy, false);
+  run[3] = line_run(q, fx, fy, dx, dy, false);
+  run[0] = line_run(q, bx - run[1] * dx, by - run[1] * dy, -dx, -dy, true);
+  run[4] = line_run(q, fx + run[3] * dx, fy + run[3] * dy, dx, dy, true);
+  *mid = (fwd - back) / 2;
 
   /* A gap or ring of 1/4 to 2 modules, a stone of 2 to 4.5 */
   int span = run[0] + run[1] + run[2] + run[3] + run[4];
@@ -923,6 +935,21 @@ static bool capstone_column_check(const struct k_quirc *q, int x, int y) {
       return false;
   }
   return true;
+}
+
+/* The column through a candidate's stone finds the finder's middle row, that
+ * row its centre, and the diagonals through the centre confirm it. */
+static bool finder_cross_check(const struct k_quirc *q, int x, int y) {
+  int mid;
+
+  if (!finder_cross_section(q, x, y, 0, 1, &mid))
+    return false;
+  y += mid;
+  if (!finder_cross_section(q, x, y, 1, 0, &mid))
+    return false;
+  x += mid;
+  return finder_cross_section(q, x, y, 1, 1, &mid) &&
+         finder_cross_section(q, x, y, 1, -1, &mid);
 }
 
 static void test_capstone(struct k_quirc *q, int x, int y, int *pb) {
@@ -936,7 +963,7 @@ static void test_capstone(struct k_quirc *q, int x, int y, int *pb) {
   if (seen >= QUIRC_PIXEL_REGION && q->regions[seen].capstone >= 0)
     return;
 
-  if (!capstone_column_check(q, stone_x + pb[2] / 2, y))
+  if (!finder_cross_check(q, stone_x + pb[2] / 2, y))
     return;
 
   int ring_right = region_code(q, ring_right_x, y);
