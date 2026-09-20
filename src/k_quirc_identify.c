@@ -467,6 +467,13 @@ static inline int clamp_threshold(int t) {
   return (t < 0) ? 0 : (t > 255) ? 255 : t;
 }
 
+#ifdef K_QUIRC_PIE
+void k_quirc_binarize_pie(uint8_t *pixels, int blocks, const uint8_t *t);
+#define K_QUIRC_BINARIZE_ALIGN 15
+#else
+#define K_QUIRC_BINARIZE_ALIGN 3
+#endif
+
 /* Binarize a span against a constant threshold, t in 0..255, four pixels at
  * a time.  With H the top bit of every byte, (v | H) - (t & ~H) cannot borrow
  * between bytes and leaves in each top bit whether the pixel's low seven bits
@@ -476,10 +483,18 @@ ALWAYS_INLINE void binarize_span(quirc_pixel_t *p, int len, int t,
   int i = 0;
 
   if (K_QUIRC_LE_WORD_SCAN && sizeof(quirc_pixel_t) == 1) {
-    /* Pixel by pixel up to a word boundary: an unaligned load and store costs
-     * the ESP32-P4 a third more */
-    for (; i < len && ((uintptr_t)(p + i) & 3); i++)
+    /* Pixel by pixel up to a boundary: the vector unit needs one, and an
+     * unaligned word load and store costs the ESP32-P4 a third more */
+    for (; i < len && ((uintptr_t)(p + i) & K_QUIRC_BINARIZE_ALIGN); i++)
       p[i] = ((p[i] ^ xor_mask) < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
+
+#ifdef K_QUIRC_PIE
+    if (!xor_mask && len - i >= 16) {
+      uint8_t t8 = (uint8_t)t;
+      k_quirc_binarize_pie(p + i, (len - i) / 16, &t8);
+      i += (len - i) & ~15;
+    }
+#endif
 
     const uint32_t H = 0x80808080u;
     const uint32_t mask = xor_mask * 0x01010101u;
