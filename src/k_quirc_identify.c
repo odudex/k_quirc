@@ -4,6 +4,7 @@
  */
 
 #include "k_quirc_internal.h"
+#include <limits.h>
 
 #define TAG "k_quirc"
 
@@ -14,17 +15,13 @@ typedef struct {
   xylf_t *data;
   size_t len;
   size_t capacity;
-  bool *overflow;
 } lifo_t;
 
 ALWAYS_INLINE int lifo_push(lifo_t *s, const xylf_t *item) {
-  if (s->len < s->capacity) {
-    s->data[s->len++] = *item;
-    return 1;
-  }
-  if (s->overflow)
-    *s->overflow = true;
-  return 0;
+  if (s->len >= s->capacity)
+    return 0;
+  s->data[s->len++] = *item;
+  return 1;
 }
 
 ALWAYS_INLINE void lifo_pop(lifo_t *s, xylf_t *item) {
@@ -111,6 +108,28 @@ ALWAYS_INLINE int row_find_pixel(const quirc_pixel_t *row, int x, int limit,
     }
   }
   for (; x <= limit; x++)
+    if (row[x] == color)
+      return x;
+  return -1;
+}
+
+/* Last index in [limit, x] where row[index] == color; -1 if none.  The zero
+ * test is the exact one: the borrow trick can flag the byte above a zero. */
+ALWAYS_INLINE int row_find_pixel_back(const quirc_pixel_t *row, int x,
+                                      int limit, quirc_pixel_t color) {
+  if (K_QUIRC_LE_WORD_SCAN && sizeof(quirc_pixel_t) == 1) {
+    uint32_t pat = (uint32_t)color * 0x01010101u;
+    while (x - 3 >= limit) {
+      uint32_t v;
+      memcpy(&v, row + x - 3, 4);
+      v ^= pat;
+      uint32_t zero = ~(((v & 0x7f7f7f7fu) + 0x7f7f7f7fu) | v | 0x7f7f7f7fu);
+      if (zero)
+        return x - 3 + high_byte(zero);
+      x -= 4;
+    }
+  }
+  for (; x >= limit; x--)
     if (row[x] == color)
       return x;
   return -1;
@@ -293,21 +312,23 @@ perspective_unmap(const float *c, const struct quirc_point *in, float *u,
 }
 
 /*
- * Span-based floodfill routine
+ * Span-based flood fill from reg->seed, recording the region's area and
+ * bounding box.  Out of stack, the area is left at 0.
  */
-typedef void (*span_func_t)(void *user_data, int y, int left, int right);
-
 HOT_FUNC
-static void flood_fill_seed(struct k_quirc *q, int x, int y,
-                            quirc_pixel_t from_color, quirc_pixel_t to_color,
-                            span_func_t func, void *user_data, int depth) {
-  (void)depth;
+static void flood_fill_seed(struct k_quirc *q, struct quirc_region *reg,
+                            quirc_pixel_t from_color, quirc_pixel_t to_color) {
+  int x = reg->seed.x;
+  int y = reg->seed.y;
 
   lifo_t lifo;
   lifo.data = (xylf_t *)q->flood_fill_stack;
   lifo.len = 0;
   lifo.capacity = QUIRC_FLOOD_FILL_STACK;
-  lifo.overflow = &q->flood_fill_overflow;
+
+  reg->count = 0;
+  reg->x0 = reg->x1 = (int16_t)x;
+  reg->y0 = reg->y1 = (int16_t)y;
 
   /* Neighbor-row scan state for the active span.  Pixels only ever change
    * away from from_color, so after returning from a child span the scan can
@@ -328,8 +349,15 @@ static void flood_fill_seed(struct k_quirc *q, int x, int y,
 
       fill_span(row + left, right - left + 1, to_color);
 
-      if (func)
-        func(user_data, y, left, right);
+      reg->count += right - left + 1;
+      if (left < reg->x0)
+        reg->x0 = (int16_t)left;
+      if (right > reg->x1)
+        reg->x1 = (int16_t)right;
+      if (y < reg->y0)
+        reg->y0 = (int16_t)y;
+      if (y > reg->y1)
+        reg->y1 = (int16_t)y;
 
       scan = left; /* start with the row above */
     }
@@ -369,6 +397,9 @@ static void flood_fill_seed(struct k_quirc *q, int x, int y,
             recurse = true;
           }
         }
+      } else {
+        reg->count = 0; /* out of stack */
+        return;
       }
 
       if (!recurse) {
@@ -622,11 +653,6 @@ static void threshold(struct k_quirc *q, bool inverted) {
 #endif /* K_QUIRC_BILINEAR_THRESHOLD */
 }
 
-ALWAYS_INLINE void area_count(void *user_data, int y, int left, int right) {
-  (void)y;
-  ((struct quirc_region *)user_data)->count += right - left + 1;
-}
-
 HOT_FUNC
 static int region_code(struct k_quirc *q, int x, int y) {
   int pixel;
@@ -656,54 +682,72 @@ static int region_code(struct k_quirc *q, int x, int y) {
   box->seed.y = y;
   box->capstone = -1;
 
-  q->flood_fill_overflow = false;
-  flood_fill_seed(q, x, y, pixel, region, area_count, box, 0);
-  if (q->flood_fill_overflow) {
-    box->count = 0;
-    box->capstone = -1;
-    return -1;
-  }
-
-  return region;
+  flood_fill_seed(q, box, pixel, region);
+  return box->count ? region : -1;
 }
 
-struct polygon_score_data {
-  struct quirc_point ref;
-  int scores[4];
-  struct quirc_point *corners;
+/* A corner search: the best score and every point that reached it.  Blur
+ * flattens a corner into a short diagonal whose points tie on a projection;
+ * the corner is their centre rather than whichever came first.  Distances can
+ * tie between two different corners, so there the first point stands. */
+struct corner_score {
+  int best;
+  int ties;
+  struct quirc_point sum;
 };
 
-static void find_one_corner(void *user_data, int y, int left, int right) {
-  struct polygon_score_data *psd = (struct polygon_score_data *)user_data;
-  int xs[2] = {left, right};
-  int dy = y - psd->ref.y;
-
-  for (int i = 0; i < 2; i++) {
-    int dx = xs[i] - psd->ref.x;
-    int d = dx * dx + dy * dy;
-
-    if (d > psd->scores[0]) {
-      psd->scores[0] = d;
-      psd->corners[0].x = xs[i];
-      psd->corners[0].y = y;
-    }
+static void corner_offer(struct corner_score *c, int score, int x, int y,
+                         bool average) {
+  if (score < c->best || (score == c->best && !average))
+    return;
+  if (score > c->best) {
+    c->best = score;
+    c->ties = 0;
+    c->sum.x = 0;
+    c->sum.y = 0;
   }
+  c->ties++;
+  c->sum.x += x;
+  c->sum.y += y;
 }
 
-static void find_other_corners(void *user_data, int y, int left, int right) {
-  struct polygon_score_data *psd = (struct polygon_score_data *)user_data;
-  int xs[2] = {left, right};
+static void corner_take(const struct corner_score *c, struct quirc_point *p) {
+  if (!c->ties)
+    return;
+  p->x = (c->sum.x + c->ties / 2) / c->ties;
+  p->y = (c->sum.y + c->ties / 2) / c->ties;
+}
 
-  for (int i = 0; i < 2; i++) {
-    int up = xs[i] * psd->ref.x + y * psd->ref.y;
-    int rt = xs[i] * -psd->ref.y + y * psd->ref.x;
-    int scores[4] = {up, rt, -up, -rt};
+/* Offer both ends of every row of a region.  What a corner maximizes - a
+ * distance, a projection - is convex along a row, so nothing between a row's
+ * outermost pixels can beat them, and no flood fill is needed to visit them.
+ * With `far`, scores are distances from ref; otherwise projections on the
+ * axis ref and its normal, one per corner. */
+static void region_corners(const struct k_quirc *q, int rcode,
+                           const struct quirc_point *ref, bool far,
+                           struct corner_score *corners) {
+  const struct quirc_region *reg = &q->regions[rcode];
 
-    for (int j = 0; j < 4; j++) {
-      if (scores[j] > psd->scores[j]) {
-        psd->scores[j] = scores[j];
-        psd->corners[j].x = xs[i];
-        psd->corners[j].y = y;
+  for (int y = reg->y0; y <= reg->y1; y++) {
+    const quirc_pixel_t *row = q->pixels + y * q->w;
+    int xs[2];
+    xs[0] = row_find_pixel(row, reg->x0, reg->x1, (quirc_pixel_t)rcode);
+    if (xs[0] < 0)
+      continue;
+    xs[1] = row_find_pixel_back(row, reg->x1, xs[0], (quirc_pixel_t)rcode);
+
+    for (int i = 0; i < 2; i++) {
+      if (far) {
+        int dx = xs[i] - ref->x;
+        int dy = y - ref->y;
+        corner_offer(&corners[0], dx * dx + dy * dy, xs[i], y, false);
+      } else {
+        int up = xs[i] * ref->x + y * ref->y;
+        int rt = xs[i] * -ref->y + y * ref->x;
+        corner_offer(&corners[0], up, xs[i], y, true);
+        corner_offer(&corners[1], rt, xs[i], y, true);
+        corner_offer(&corners[2], -up, xs[i], y, true);
+        corner_offer(&corners[3], -rt, xs[i], y, true);
       }
     }
   }
@@ -712,35 +756,23 @@ static void find_other_corners(void *user_data, int y, int left, int right) {
 static void find_region_corners(struct k_quirc *q, int rcode,
                                 const struct quirc_point *ref,
                                 struct quirc_point *corners) {
-  struct quirc_region *region = &q->regions[rcode];
-  struct polygon_score_data psd;
+  struct corner_score score[4] = {{.best = -1}};
+  struct quirc_point far = *ref;
 
-  memset(&psd, 0, sizeof(psd));
-  psd.corners = corners;
+  /* The point farthest from the reference, which is inside the stone, is a
+   * corner; the axis through the two picks out all four. */
+  region_corners(q, rcode, ref, true, score);
+  corner_take(&score[0], &far);
+  far.x -= ref->x;
+  far.y -= ref->y;
 
-  memcpy(&psd.ref, ref, sizeof(psd.ref));
-  psd.scores[0] = -1;
-  q->flood_fill_overflow = false;
-  flood_fill_seed(q, region->seed.x, region->seed.y, rcode, QUIRC_PIXEL_BLACK,
-                  find_one_corner, &psd, 0);
-  if (q->flood_fill_overflow)
-    return;
-
-  psd.ref.x = psd.corners[0].x - psd.ref.x;
-  psd.ref.y = psd.corners[0].y - psd.ref.y;
-
+  for (int i = 0; i < 4; i++) {
+    score[i].best = INT_MIN;
+    score[i].ties = 0;
+  }
+  region_corners(q, rcode, &far, false, score);
   for (int i = 0; i < 4; i++)
-    memcpy(&psd.corners[i], &region->seed, sizeof(psd.corners[i]));
-
-  int i = region->seed.x * psd.ref.x + region->seed.y * psd.ref.y;
-  psd.scores[0] = i;
-  psd.scores[2] = -i;
-  i = region->seed.x * -psd.ref.y + region->seed.y * psd.ref.x;
-  psd.scores[1] = i;
-  psd.scores[3] = -i;
-
-  flood_fill_seed(q, region->seed.x, region->seed.y, QUIRC_PIXEL_BLACK, rcode,
-                  find_other_corners, &psd, 0);
+    corner_take(&score[i], &corners[i]);
 }
 
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
@@ -839,8 +871,7 @@ static void record_capstone(struct k_quirc *q, int ring, int stone) {
   ring_reg->capstone = cs_index;
 
   find_region_corners(q, ring, &stone_reg->seed, capstone->corners);
-  if (q->flood_fill_overflow ||
-      !perspective_setup(capstone->c, capstone->corners, 7.0f, 7.0f)) {
+  if (!perspective_setup(capstone->c, capstone->corners, 7.0f, 7.0f)) {
     stone_reg->capstone = -1;
     ring_reg->capstone = -1;
     q->num_capstones = cs_index;
@@ -1532,21 +1563,10 @@ static void record_qr_grid(struct k_quirc *q, int a, int b, int c) {
        * high resolution where each module consists of many pixels. */
       struct quirc_region *areg = &q->regions[qr->align_region];
       int code = qr->align_region;
-      int est = (int)sqrtf((float)areg->count) + 2;
-      int x0 = areg->seed.x - est, y0 = areg->seed.y - est;
-      int x1 = areg->seed.x + est, y1 = areg->seed.y + est;
-      if (x0 < 0)
-        x0 = 0;
-      if (y0 < 0)
-        y0 = 0;
-      if (x1 >= q->w)
-        x1 = q->w - 1;
-      if (y1 >= q->h)
-        y1 = q->h - 1;
       long sum_x = 0, sum_y = 0;
       int n = 0;
-      for (int sy = y0; sy <= y1; sy++) {
-        for (int sx = x0; sx <= x1; sx++) {
+      for (int sy = areg->y0; sy <= areg->y1; sy++) {
+        for (int sx = areg->x0; sx <= areg->x1; sx++) {
           if (q->pixels[sy * q->w + sx] == code) {
             sum_x += sx;
             sum_y += sy;

@@ -166,7 +166,6 @@ uint8_t *k_quirc_begin(k_quirc_t *q, int *w, int *h) {
   q->num_regions = QUIRC_PIXEL_REGION;
   q->num_capstones = 0;
   q->num_grids = 0;
-  q->flood_fill_overflow = false;
 
   if (w)
     *w = q->w;
