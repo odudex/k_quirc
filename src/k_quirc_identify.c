@@ -853,10 +853,61 @@ static void record_capstone(struct k_quirc *q, int ring, int stone) {
 #endif
 }
 
+/* Length of the dark (or light) run from (x, y) along dy, excluding (x, y) */
+static int column_run(const struct k_quirc *q, int x, int y, int dy,
+                      bool dark) {
+  const quirc_pixel_t *p = q->pixels + y * q->w + x;
+  int stride = dy * q->w;
+  int room = (dy > 0) ? q->h - 1 - y : y;
+  int n = 0;
+
+  while (n < room && (p[stride] != QUIRC_PIXEL_WHITE) == dark) {
+    p += stride;
+    n++;
+  }
+  return n;
+}
+
+/* Does the column through a candidate's stone read 1:1:3:1:1 too?  Dense data
+ * matches a row by chance hundreds of times a frame; each match cost flood
+ * fills and region labels, until none were left for the finders further down.
+ * The runs are judged against their span of seven modules, which a fattened
+ * binarization leaves alone, and loosely: a finder two pixels to the module
+ * quantizes badly. */
+static bool capstone_column_check(const struct k_quirc *q, int x, int y) {
+  int run[5]; /* ring, gap, stone, gap, ring: top to bottom */
+  int up = column_run(q, x, y, -1, true);
+  int down = column_run(q, x, y, 1, true);
+  run[2] = up + down + 1;
+  run[1] = column_run(q, x, y - up, -1, false);
+  run[3] = column_run(q, x, y + down, 1, false);
+  run[0] = column_run(q, x, y - up - run[1], -1, true);
+  run[4] = column_run(q, x, y + down + run[3], 1, true);
+
+  /* A gap or ring of 1/4 to 2 modules, a stone of 2 to 4.5 */
+  int span = run[0] + run[1] + run[2] + run[3] + run[4];
+  for (int i = 0; i < 5; i++) {
+    if (i == 2 ? (14 * run[i] < 4 * span || 14 * run[i] > 9 * span)
+               : (28 * run[i] < span || 28 * run[i] > 8 * span))
+      return false;
+  }
+  return true;
+}
+
 static void test_capstone(struct k_quirc *q, int x, int y, int *pb) {
   int ring_right_x = x - pb[4];
   int ring_left_x = x - pb[4] - pb[3] - pb[2] - pb[1] - pb[0];
   int stone_x = x - pb[4] - pb[3] - pb[2];
+
+  /* Every row through a finder is a candidate; all but the first find it
+   * already recorded. */
+  int seen = q->pixels[y * q->w + stone_x];
+  if (seen >= QUIRC_PIXEL_REGION && q->regions[seen].capstone >= 0)
+    return;
+
+  if (!capstone_column_check(q, stone_x + pb[2] / 2, y))
+    return;
+
   int ring_right = region_code(q, ring_right_x, y);
   int ring_left = region_code(q, ring_left_x, y);
 
