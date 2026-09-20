@@ -993,94 +993,208 @@ static void find_alignment_pattern(struct k_quirc *q, int index) {
   }
 }
 
+/*
+ * Grid fitness: how well a code's known structure matches the image under a
+ * candidate perspective, every cell sampled 3x3 a fifth of a module apart.
+ *
+ * Fitting evaluates a few hundred thousand cells and floating point is the
+ * whole cost, so cell centres are walked along lines, where the map's
+ * numerators and denominator advance by additions, and the samples around a
+ * centre are integer steps along the map's Jacobian, taken once per pattern.
+ */
+
+/* Image-space steps, 16.16, for a fifth of a module along u and v, and how far
+ * from a cell's centre its samples reach, in whole pixels. */
+struct sample_steps {
+  int xu, xv, yu, yv;
+  int reach_x, reach_y;
+};
+
+static bool sample_steps_at(const float *c, float u, float v,
+                            struct sample_steps *s) {
+  float inv = 1.0f / (c[6] * u + c[7] * v + 1.0f);
+  float px = (c[0] * u + c[1] * v + c[2]) * inv;
+  float py = (c[3] * u + c[4] * v + c[5]) * inv;
+  float k = inv * (0.2f * 65536.0f);
+  float xu = (c[0] - c[6] * px) * k;
+  float xv = (c[1] - c[7] * px) * k;
+  float yu = (c[3] - c[6] * py) * k;
+  float yv = (c[4] - c[7] * py) * k;
+
+  /* A degenerate fit has no usable steps (NaN fails the test too) */
+  if (!(fabsf(xu) + fabsf(xv) + fabsf(yu) + fabsf(yv) < 1e8f))
+    return false;
+
+  s->xu = (int)xu;
+  s->xv = (int)xv;
+  s->yu = (int)yu;
+  s->yv = (int)yv;
+  s->reach_x = ((abs(s->xu) + abs(s->xv)) >> 16) + 1;
+  s->reach_y = ((abs(s->yu) + abs(s->yv)) >> 16) + 1;
+  return true;
+}
+
+/* The perspective map at a cell centre, as numerators and denominator */
+struct cell_cursor {
+  const float *c;
+  float nx, ny, den;
+};
+
+static void cursor_set(struct cell_cursor *k, const float *c, int x, int y) {
+  float u = x + 0.5f;
+  float v = y + 0.5f;
+  k->c = c;
+  k->nx = c[0] * u + c[1] * v + c[2];
+  k->ny = c[3] * u + c[4] * v + c[5];
+  k->den = c[6] * u + c[7] * v + 1.0f;
+}
+
+enum { DIR_U, DIR_V, DIR_BACK_U, DIR_BACK_V };
+
+ALWAYS_INLINE int dark_at(const quirc_pixel_t *pixels, unsigned w, int fx,
+                          int fy) {
+  return pixels[(unsigned)(fy >> 16) * w + (unsigned)(fx >> 16)] != 0;
+}
+
+/* Score n cells from the cursor along dir, leaving it on the cell after the
+ * last: +1 per dark sample, -1 per light; reversed on even cells if
+ * `alternate`. */
 HOT_FUNC
-static int fitness_cell(const struct k_quirc *q, int index, int x, int y) {
-  const struct quirc_grid *qr = &q->grids[index];
-  const float *c = qr->c;
-  int score = 0;
-  static const float offs[] = {-0.2f, 0.0f, 0.2f};
-  int w = q->w;
-  int h = q->h;
+static int fitness_line(const struct k_quirc *q, const struct sample_steps *s,
+                        struct cell_cursor *k, int dir, int n, bool alternate) {
   const quirc_pixel_t *pixels = q->pixels;
-
-  /* Evaluate the perspective map at the cell center once, with a single
-   * true division; the eight surrounding samples lie within +/-0.2 modules,
-   * so their reciprocals are recovered from the center one with a
-   * Newton-Raphson step (error ~r^2 for a relative denominator change r,
-   * far below pixel rounding).  Avoids 8 of 9 float divisions per cell —
-   * division is the slowest FPU operation on the ESP32-P4. */
-  float uc = x + 0.5f;
-  float vc = y + 0.5f;
-  float den_c = c[6] * uc + c[7] * vc + 1.0f;
-  float nx_c = c[0] * uc + c[1] * vc + c[2];
-  float ny_c = c[3] * uc + c[4] * vc + c[5];
-  float inv_c = 1.0f / den_c;
-
-  for (int vi = 0; vi < 3; vi++) {
-    float dv = offs[vi];
-    float den_v = den_c + c[7] * dv;
-    float nx_v = nx_c + c[1] * dv;
-    float ny_v = ny_c + c[4] * dv;
-
-    for (int ui = 0; ui < 3; ui++) {
-      float du = offs[ui];
-      float den = den_v + c[6] * du;
-      float inv = inv_c * (2.0f - den * inv_c);
-
-      int px = fast_roundf((nx_v + c[0] * du) * inv);
-      int py = fast_roundf((ny_v + c[3] * du) * inv);
-
-      if (LIKELY(py >= 0 && py < h && px >= 0 && px < w)) {
-        score += pixels[py * w + px] ? 1 : -1;
-      }
-    }
-  }
-
-  return score;
-}
-
-static int fitness_ring(const struct k_quirc *q, int index, int cx, int cy,
-                        int radius) {
+  const unsigned w = (unsigned)q->w;
+  const unsigned h = (unsigned)q->h;
+  const int xu = s->xu, xv = s->xv, yu = s->yu, yv = s->yv;
+  const int reach_x = s->reach_x, reach_y = s->reach_y;
+  const float *c = k->c + (dir & 1);
+  const bool back = dir & 2;
+  const float nx_step = back ? -c[0] : c[0];
+  const float ny_step = back ? -c[3] : c[3];
+  const float den_step = back ? -c[6] : c[6];
+  float nx = k->nx, ny = k->ny, den = k->den;
   int score = 0;
 
-  for (int i = 0; i < radius * 2; i++) {
-    score += fitness_cell(q, index, cx - radius + i, cy - radius);
-    score += fitness_cell(q, index, cx - radius, cy + radius - i);
-    score += fitness_cell(q, index, cx + radius, cy - radius + i);
-    score += fitness_cell(q, index, cx + radius - i, cy + radius);
+  for (int i = 0; i < n; i++) {
+    float inv = 65536.0f / den;
+    float px = nx * inv;
+    float py = ny * inv;
+
+    /* Cells far outside the image score nothing, and would overflow below */
+    if (fabsf(px) + fabsf(py) < 8192.0f * 65536.0f) {
+      int fx = (int)px + 32768 - xu - xv; /* first sample; 32768 rounds */
+      int fy = (int)py + 32768 - yu - yv;
+      unsigned cx = (unsigned)(((int)px >> 16) - reach_x);
+      unsigned cy = (unsigned)(((int)py >> 16) - reach_y);
+      int cell = 0;
+
+      if (LIKELY(cx < w - 2 * reach_x - 1 && cy < h - 2 * reach_y - 1 &&
+                 w > 2u * reach_x + 1 && h > 2u * reach_y + 1)) {
+        for (int j = 0; j < 3; j++) {
+          cell += dark_at(pixels, w, fx, fy) +
+                  dark_at(pixels, w, fx + xu, fy + yu) +
+                  dark_at(pixels, w, fx + 2 * xu, fy + 2 * yu);
+          fx += xv;
+          fy += yv;
+        }
+        cell = 2 * cell - 9;
+      } else {
+        for (int j = 0; j < 3; j++) {
+          for (int m = 0; m < 3; m++) {
+            unsigned sx = (unsigned)((fx + m * xu) >> 16);
+            unsigned sy = (unsigned)((fy + m * yu) >> 16);
+            if (sx < w && sy < h)
+              cell += pixels[sy * w + sx] ? 1 : -1;
+          }
+          fx += xv;
+          fy += yv;
+        }
+      }
+      score += (alternate && !(i & 1)) ? -cell : cell;
+    }
+
+    nx += nx_step;
+    ny += ny_step;
+    den += den_step;
   }
 
+  k->nx = nx;
+  k->ny = ny;
+  k->den = den;
   return score;
 }
 
-static int fitness_apat(const struct k_quirc *q, int index, int cx, int cy) {
-  return fitness_cell(q, index, cx, cy) - fitness_ring(q, index, cx, cy, 1) +
-         fitness_ring(q, index, cx, cy, 2);
+/* Concentric square rings around (cx, cy), dark or light as `ring_sign` gives
+ * them from the centre out.  Each ring is a closed path from its top-left
+ * cell, and the next one in starts a cell down the diagonal. */
+static int fitness_rings(const struct k_quirc *q, const float *c, int cx,
+                         int cy, const int8_t *ring_sign, int rings) {
+  struct sample_steps s;
+  struct cell_cursor k;
+  int score = 0;
+
+  if (!sample_steps_at(c, cx + 0.5f, cy + 0.5f, &s))
+    return 0;
+  cursor_set(&k, c, cx - (rings - 1), cy - (rings - 1));
+
+  for (int r = rings - 1; r > 0; r--) {
+    int ring = 0;
+    for (int dir = DIR_U; dir <= DIR_BACK_V; dir++)
+      ring += fitness_line(q, &s, &k, dir, 2 * r, false);
+    score += ring_sign[r] * ring;
+
+    k.nx += c[0] + c[1];
+    k.ny += c[3] + c[4];
+    k.den += c[6] + c[7];
+  }
+
+  return score + ring_sign[0] * fitness_line(q, &s, &k, DIR_U, 1, false);
 }
 
-static int fitness_capstone(const struct k_quirc *q, int index, int x, int y) {
-  x += 3;
-  y += 3;
+static int fitness_apat(const struct k_quirc *q, const float *c, int cx,
+                        int cy) {
+  static const int8_t sign[] = {1, -1, 1};
+  return fitness_rings(q, c, cx, cy, sign, 3);
+}
 
-  return fitness_cell(q, index, x, y) + fitness_ring(q, index, x, y, 1) -
-         fitness_ring(q, index, x, y, 2) + fitness_ring(q, index, x, y, 3);
+static int fitness_capstone(const struct k_quirc *q, const float *c, int x,
+                            int y) {
+  static const int8_t sign[] = {1, 1, -1, 1};
+  return fitness_rings(q, c, x + 3, y + 3, sign, 4);
+}
+
+/* A timing pattern: n alternating cells from (x, y) along dir, the sampling
+ * steps refreshed every few cells. */
+static int fitness_timing(const struct k_quirc *q, const float *c, int x, int y,
+                          int dir, int n) {
+  const int segment = 8; /* even: every segment starts on a light cell */
+  struct cell_cursor k;
+  int score = 0;
+
+  cursor_set(&k, c, x, y);
+  for (int i = 0; i < n; i += segment) {
+    int len = (n - i < segment) ? n - i : segment;
+    float mid = i + 0.5f * len;
+    struct sample_steps s;
+    if (!sample_steps_at(c, x + 0.5f + (dir == DIR_U ? mid : 0.0f),
+                         y + 0.5f + (dir == DIR_V ? mid : 0.0f), &s))
+      return score;
+    score += fitness_line(q, &s, &k, dir, len, true);
+  }
+  return score;
 }
 
 static int fitness_all(const struct k_quirc *q, int index) {
   const struct quirc_grid *qr = &q->grids[index];
-  int version = (qr->grid_size - 17) / 4;
-  int score = 0;
+  const float *c = qr->c;
+  int gs = qr->grid_size;
+  int version = (gs - 17) / 4;
   int ap_count;
 
-  for (int i = 0; i < qr->grid_size - 14; i++) {
-    int expect = (i & 1) ? 1 : -1;
-    score += fitness_cell(q, index, i + 7, 6) * expect;
-    score += fitness_cell(q, index, 6, i + 7) * expect;
-  }
-
-  score += fitness_capstone(q, index, 0, 0);
-  score += fitness_capstone(q, index, qr->grid_size - 7, 0);
-  score += fitness_capstone(q, index, 0, qr->grid_size - 7);
+  int score = fitness_timing(q, c, 7, 6, DIR_U, gs - 14) +
+              fitness_timing(q, c, 6, 7, DIR_V, gs - 14) +
+              fitness_capstone(q, c, 0, 0) + fitness_capstone(q, c, gs - 7, 0) +
+              fitness_capstone(q, c, 0, gs - 7);
 
   if (version < 0 || version > QUIRC_MAX_VERSION)
     return score;
@@ -1091,13 +1205,13 @@ static int fitness_all(const struct k_quirc *q, int index) {
     ap_count++;
 
   for (int i = 1; i + 1 < ap_count; i++) {
-    score += fitness_apat(q, index, 6, info->apat[i]);
-    score += fitness_apat(q, index, info->apat[i], 6);
+    score += fitness_apat(q, c, 6, info->apat[i]);
+    score += fitness_apat(q, c, info->apat[i], 6);
   }
 
   for (int i = 1; i < ap_count; i++)
     for (int j = 1; j < ap_count; j++)
-      score += fitness_apat(q, index, info->apat[i], info->apat[j]);
+      score += fitness_apat(q, c, info->apat[i], info->apat[j]);
 
   return score;
 }
