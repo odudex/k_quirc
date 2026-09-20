@@ -103,21 +103,22 @@ static void poly_add(uint8_t *dst, const uint8_t *src, uint8_t c, int shift,
   }
 }
 
+/* Horner's rule: one table multiply per coefficient, and no modulo since two
+ * logarithms sum to less than 2p. */
 static uint8_t poly_eval(const uint8_t *s, uint8_t x,
                          const struct galois_field *gf, int len) {
   uint8_t sum = 0;
-  uint8_t log_x = gf->log[x];
+  int log_x = gf->log[x];
 
   if (!x)
     return s[0];
 
-  for (int i = 0; i < len; i++) {
-    uint8_t c = s[i];
-
-    if (!c)
-      continue;
-
-    sum ^= gf->exp[(gf->log[c] + log_x * i) % gf->p];
+  for (int i = len - 1; i >= 0; i--) {
+    if (sum) {
+      int e = gf->log[sum] + log_x;
+      sum = gf->exp[e >= gf->p ? e - gf->p : e];
+    }
+    sum ^= s[i];
   }
 
   return sum;
@@ -174,17 +175,20 @@ static int block_syndromes(const uint8_t *data, int bs, int npar, uint8_t *s) {
 
   memset(s, 0, MAX_POLY);
 
+  /* s[i] is the codeword evaluated at alpha^i, by Horner's rule */
   for (int i = 0; i < npar; i++) {
+    uint8_t sum = 0;
+
     for (int j = 0; j < bs; j++) {
-      uint8_t c = data[bs - j - 1];
-
-      if (!c)
-        continue;
-
-      s[i] ^= gf256_exp[((int)gf256_log[c] + i * j) % 255];
+      if (sum) {
+        int e = gf256_log[sum] + i;
+        sum = gf256_exp[e >= 255 ? e - 255 : e];
+      }
+      sum ^= data[j];
     }
 
-    if (s[i])
+    s[i] = sum;
+    if (sum)
       nonzero = 1;
   }
 
@@ -235,10 +239,15 @@ static k_quirc_error_t correct_block(uint8_t *data,
 
   eloc_poly(omega, s, sigma, npar - 1);
 
+  /* The locator's degree is the number of errors, usually far below npar */
+  int terms = npar;
+  while (terms > 1 && !sigma[terms - 1])
+    terms--;
+
   for (int i = 0; i < ecc->bs; i++) {
     uint8_t xinv = gf256_exp[255 - i];
 
-    if (!poly_eval(sigma, xinv, &gf256, npar)) {
+    if (!poly_eval(sigma, xinv, &gf256, terms)) {
       uint8_t sd_x = poly_eval(sigma_deriv, xinv, &gf256, npar);
       uint8_t omega_x = poly_eval(omega, xinv, &gf256, npar);
       uint8_t error =
