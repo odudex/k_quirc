@@ -823,7 +823,11 @@ static void accumulate_dilation(struct k_quirc *q, int ring_code,
   uint32_t ring = 0;
   uint32_t white = 0;
 
-  for (int y = y0; y <= y1; y++) {
+  /* The measure is a ratio of areas, so some thirty rows serve as well as
+   * all of them; a large finder has hundreds. */
+  int step = (y1 - y0) / 32 + 1;
+
+  for (int y = y0; y <= y1; y += step) {
     const quirc_pixel_t *row = q->pixels + (size_t)y * q->w;
     uint32_t pending = 0;
     bool inside = false;
