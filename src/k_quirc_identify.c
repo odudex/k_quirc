@@ -1389,13 +1389,17 @@ static void jiggle_perspective(struct k_quirc *q, int index) {
       float step = adjustments[j];
       float new_val = (i & 1) ? old + step : old - step;
 
+      if (new_val == old)
+        continue; /* a zero coefficient: the same map again */
       qr->c[j] = new_val;
       int test = fitness_all(q, index);
 
-      if (test > best)
+      if (test > best) {
         best = test;
-      else
+        i |= 1; /* stepping back up from here is the value just beaten */
+      } else {
         qr->c[j] = old;
+      }
     }
 
     for (int i = 0; i < 8; i++)
