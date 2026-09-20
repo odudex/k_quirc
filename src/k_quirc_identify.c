@@ -1073,7 +1073,8 @@ static void find_alignment_pattern(struct k_quirc *q, int index) {
 
 /*
  * Grid fitness: how well a code's known structure matches the image under a
- * candidate perspective, every cell sampled 3x3 a fifth of a module apart.
+ * candidate perspective, every cell sampled at its centre and at four corners
+ * a fifth of a module out.
  *
  * Fitting evaluates a few hundred thousand cells and floating point is the
  * whole cost, so cell centres are walked along lines, where the map's
@@ -1168,17 +1169,15 @@ static int fitness_line(const struct k_quirc *q, const struct sample_steps *s,
 
       if (LIKELY(cx < w - 2 * reach_x - 1 && cy < h - 2 * reach_y - 1 &&
                  w > 2u * reach_x + 1 && h > 2u * reach_y + 1)) {
-        for (int j = 0; j < 3; j++) {
-          cell += dark_at(pixels, w, fx, fy) +
-                  dark_at(pixels, w, fx + xu, fy + yu) +
-                  dark_at(pixels, w, fx + 2 * xu, fy + 2 * yu);
-          fx += xv;
-          fy += yv;
-        }
-        cell = 2 * cell - 9;
+        cell = dark_at(pixels, w, fx, fy) +
+               dark_at(pixels, w, fx + 2 * xu, fy + 2 * yu) +
+               dark_at(pixels, w, fx + xu + xv, fy + yu + yv) +
+               dark_at(pixels, w, fx + 2 * xv, fy + 2 * yv) +
+               dark_at(pixels, w, fx + 2 * (xu + xv), fy + 2 * (yu + yv));
+        cell = 2 * cell - 5;
       } else {
         for (int j = 0; j < 3; j++) {
-          for (int m = 0; m < 3; m++) {
+          for (int m = j & 1; m < 3; m += 2) {
             unsigned sx = (unsigned)((fx + m * xu) >> 16);
             unsigned sy = (unsigned)((fy + m * yu) >> 16);
             if (sx < w && sy < h)
