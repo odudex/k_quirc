@@ -1812,8 +1812,14 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
   pixels_setup(q);
   threshold(q, false);
 
-  for (int i = 0; i < q->h; i++)
+  /* A finder shows on several rows, so every other row finds it at half the
+   * cost; the rows between are for when that came up short. */
+  for (int i = 0; i < q->h; i += 2)
     finder_scan(q, i);
+  if (q->num_capstones < 3) {
+    for (int i = 1; i < q->h; i += 2)
+      finder_scan(q, i);
+  }
 
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
   /* Every capstone found above has contributed its finder areas.  Correct the
