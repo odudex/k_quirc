@@ -68,6 +68,9 @@ jobs:
       - name: Run threshold convergence test
         run: test/build_ci/k_quirc_convergence_test
 
+      - name: Run alignment search bound test
+        run: test/build_ci/k_quirc_alignment_search_test
+
       # The two defects this guards against were invisible to the validation
       # matrix - one was an out-of-bounds read into adjacent .rodata, the other
       # a left-shift of a negative value. Neither changes the pass/fail of a
@@ -85,6 +88,7 @@ jobs:
           test/build_asan/k_quirc_api_test
           test/build_asan/k_quirc_bimodal_test
           test/build_asan/k_quirc_convergence_test
+          test/build_asan/k_quirc_alignment_search_test
 
       # Sanitized sweep over real images. Deliberately a narrow slice of the
       # matrix below - the point is to put the identify/decode path under the

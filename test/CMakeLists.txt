@@ -164,7 +164,23 @@ foreach(regions IN ITEMS 254 1024)
     add_test(NAME ${target} COMMAND ${target})
 endforeach()
 
+# test_alignment_search.c includes k_quirc_identify.c to reach the static search.
+add_executable(k_quirc_alignment_search_test
+    test_alignment_search.c
+    ${K_QUIRC_SRC_DIR}/k_quirc.c
+    ${K_QUIRC_SRC_DIR}/k_quirc_version.c
+    ${K_QUIRC_SRC_DIR}/k_quirc_decode.c
+)
+target_include_directories(k_quirc_alignment_search_test PRIVATE
+    ${K_QUIRC_INC_DIR} ${K_QUIRC_SRC_DIR})
+target_compile_definitions(k_quirc_alignment_search_test PRIVATE
+    K_QUIRC_ADAPTIVE_THRESHOLD K_QUIRC_BILINEAR_THRESHOLD)
+target_compile_options(k_quirc_alignment_search_test PRIVATE
+    -Wall -Wextra -Wno-unused-function -O2)
+target_link_libraries(k_quirc_alignment_search_test m)
+
 add_test(NAME api COMMAND k_quirc_api_test)
+add_test(NAME alignment_search COMMAND k_quirc_alignment_search_test)
 add_test(NAME version_db COMMAND k_quirc_version_db_test)
 add_test(NAME decode_payload COMMAND k_quirc_decode_payload_test)
 add_test(NAME bimodal COMMAND k_quirc_bimodal_test)

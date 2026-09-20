@@ -929,7 +929,16 @@ static void find_alignment_pattern(struct k_quirc *q, int index) {
     return;
   perspective_map(c2->c, u + 1.0f, v, &c);
 
-  size_estimate = abs((a.x - b.x) * -(c.y - b.y) + (a.y - b.y) * (c.x - b.x));
+  /* a - b and c - b are one module each; their cross product is its area.  A
+   * bad estimate can make it astronomical, and the spiral below would follow.
+   * No decodable module exceeds a hundredth of the image, which also keeps
+   * the search within the image's own area. */
+  float ax = (float)a.x - b.x, ay = (float)a.y - b.y;
+  float cx = (float)c.x - b.x, cy = (float)c.y - b.y;
+  float module_area = fabsf(ax * -cy + ay * cx);
+  if (!(module_area <= (float)(q->w * q->h / 100)))
+    return;
+  size_estimate = (int)module_area;
 
   while (step_size * step_size < size_estimate * 100) {
     static const int dx_map[] = {1, 0, -1, 0};
