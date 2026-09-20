@@ -42,6 +42,16 @@ ALWAYS_INLINE void lifo_pop(lifo_t *s, xylf_t *item) {
 #define K_QUIRC_LE_WORD_SCAN 0
 #endif
 
+/* Index of the lowest / highest non-zero byte of v != 0.  The ESP32-P4 has no
+ * count-zeros instruction, so __builtin_ctz/clz would be library calls. */
+ALWAYS_INLINE int low_byte(uint32_t v) {
+  return (v & 0xffffu) ? ((v & 0xffu) ? 0 : 1) : ((v & 0xff0000u) ? 2 : 3);
+}
+
+ALWAYS_INLINE int high_byte(uint32_t v) {
+  return (v >> 16) ? ((v >> 24) ? 3 : 2) : ((v >> 8) ? 1 : 0);
+}
+
 /* First index in [x, w) where row[index] != color; w if none.
  * The word loop uses memcpy loads, so alignment is never violated; both
  * x86 and the ESP32-P4 handle the unaligned accesses in hardware. */
@@ -54,7 +64,7 @@ ALWAYS_INLINE int row_run_end(const quirc_pixel_t *row, int x, int w,
       memcpy(&v, row + x, 4);
       v ^= pat;
       if (v)
-        return x + (__builtin_ctz(v) >> 3);
+        return x + low_byte(v);
       x += 4;
     }
   }
@@ -74,7 +84,7 @@ ALWAYS_INLINE int row_run_start(const quirc_pixel_t *row, int left,
       memcpy(&v, row + left - 4, 4);
       v ^= pat;
       if (v)
-        return left - (__builtin_clz(v) >> 3);
+        return left - 3 + high_byte(v);
       left -= 4;
     }
   }
@@ -96,7 +106,7 @@ ALWAYS_INLINE int row_find_pixel(const quirc_pixel_t *row, int x, int limit,
       v ^= pat;
       uint32_t zero = (v - 0x01010101u) & ~v & 0x80808080u;
       if (zero)
-        return x + (__builtin_ctz(zero) >> 3);
+        return x + low_byte(zero);
       x += 4;
     }
   }
@@ -530,39 +540,32 @@ static void threshold(struct k_quirc *q, bool inverted) {
     int delta = t_right_fp - t_left_fp;
     quirc_pixel_t *row = pixels + y * w;
 
-    /* The interpolated threshold t(x) = (t_left_fp + trunc(x*delta/W)) >> 16
-     * is monotone along the row, so its integer part is constant over spans.
-     * Solve for each span boundary directly and binarize the span against a
-     * constant threshold: same output as per-pixel interpolation, but the
-     * inner loop is branch-free, FP-free and vectorizable. */
-    if (delta == 0) {
+    /* t(x) = (t_left_fp + x * step_fp) >> 16 is monotone along the row, so
+     * solve for each span of constant threshold and binarize it branch-free.
+     * All in 32 bits, which keeps the divisions in hardware. */
+    int step_fp = delta / inv_w_dim;
+    if (step_fp == 0) {
       binarize_span(row, w, t_left_fp >> 16, xor_mask);
       continue;
     }
 
     int x = 0;
     while (x < w) {
-      int t_fp = t_left_fp + (int)((int64_t)x * delta / inv_w_dim);
-      int t = t_fp >> 16;
-      int64_t target, x_next;
+      int t = (t_left_fp + x * step_fp) >> 16;
+      int x_next;
 
-      if (delta > 0) {
-        /* first x where t(x) reaches t+1 */
-        target = (((int64_t)t + 1) << 16) - t_left_fp;
-        x_next = (target * inv_w_dim + delta - 1) / delta;
-      } else {
-        /* first x where t(x) drops below t */
-        target = (int64_t)t_left_fp - ((int64_t)t << 16) + 1;
-        x_next = (target * inv_w_dim + (-delta) - 1) / (-delta);
-      }
+      if (step_fp > 0) /* first x where t(x) reaches t + 1 */
+        x_next = ((t + 1) * 65536 - t_left_fp + step_fp - 1) / step_fp;
+      else /* first x where t(x) drops below t */
+        x_next = (t_left_fp - t * 65536 - step_fp) / -step_fp;
 
       if (x_next <= x)
         x_next = x + 1;
       if (x_next > w)
         x_next = w;
 
-      binarize_span(row + x, (int)x_next - x, t, xor_mask);
-      x = (int)x_next;
+      binarize_span(row + x, x_next - x, t, xor_mask);
+      x = x_next;
     }
   }
 
