@@ -1439,6 +1439,80 @@ static float length(struct quirc_point a, struct quirc_point b) {
   return sqrtf(dx * dx + dy * dy);
 }
 
+/*
+ * From version 7 up a code states its version: six bits and twelve of BCH
+ * parity, in a 3x6 block left of the top-right finder and again above the
+ * bottom-left one.  Both are read through the finder's own perspective, where
+ * the block is cells -4..-2 by 0..5.
+ */
+static uint32_t version_codeword(int version) {
+  uint32_t rem = (uint32_t)version << 12;
+  for (int i = 17; i >= 12; i--)
+    if (rem & (1u << i))
+      rem ^= 0x1f25u << (i - 12);
+  return ((uint32_t)version << 12) | rem;
+}
+
+static uint32_t read_version_block(const struct k_quirc *q,
+                                   const struct quirc_capstone *cap,
+                                   bool left_of) {
+  struct sample_steps s;
+  uint32_t word = 0;
+
+  if (!sample_steps_at(cap->c, left_of ? -2.5f : 3.0f, left_of ? 3.0f : -2.5f,
+                       &s))
+    return 0;
+
+  for (int bit = 0; bit < 18; bit++) {
+    int across = bit % 3 - 4;
+    int along = bit / 3;
+    struct cell_cursor k;
+    cursor_set(&k, cap->c, left_of ? across : along, left_of ? along : across);
+    if (fitness_line(q, &s, &k, DIR_U, 1, false) > 0)
+      word |= 1u << bit;
+  }
+  return word;
+}
+
+static int bit_errors(uint32_t word, int version) {
+  int errors = 0;
+  for (uint32_t x = word ^ version_codeword(version); x; x &= x - 1)
+    errors++;
+  return errors;
+}
+
+/* The stated version, if one within two of the estimate reads with the three
+ * bit errors the parity corrects; else the estimate.  Below version 7 there
+ * is only data where the block would be, and one random word in seventy
+ * passes, so while the estimate leaves that open both copies must agree, or
+ * one be exact. */
+static int stated_version(const struct k_quirc *q, const struct quirc_grid *qr,
+                          int estimate) {
+  if (estimate < 5)
+    return estimate;
+
+  uint32_t top_right = read_version_block(q, &q->capstones[qr->caps[2]], true);
+  uint32_t bottom_left =
+      read_version_block(q, &q->capstones[qr->caps[0]], false);
+  int best = estimate;
+  int best_errors = 4;
+
+  for (int v = estimate - 2; v <= estimate + 2; v++) {
+    if (v < 7 || v > QUIRC_MAX_VERSION)
+      continue;
+    int e0 = bit_errors(top_right, v);
+    int e1 = bit_errors(bottom_left, v);
+    bool fits = (estimate >= 7) ? (e0 <= 3 || e1 <= 3)
+                                : ((e0 <= 3 && e1 <= 3) || !e0 || !e1);
+    int errors = (e0 < e1) ? e0 : e1;
+    if (fits && errors < best_errors) {
+      best_errors = errors;
+      best = v;
+    }
+  }
+  return best;
+}
+
 static void measure_grid_size(struct k_quirc *q, int index) {
   struct quirc_grid *qr = &q->grids[index];
 
@@ -1460,7 +1534,10 @@ static void measure_grid_size(struct k_quirc *q, int index) {
 
   float grid_size_estimate = (ver_grid + hor_grid) * 0.5f;
 
+  /* Finder size against finder spacing is good to a version or so: a pixel's
+   * error in a corner is already a few percent. */
   int ver = (int)((grid_size_estimate - 15.0f) * 0.25f);
+  ver = stated_version(q, qr, ver);
   if (ver > QUIRC_MAX_VERSION) {
     /* Reject rather than clamp. Clamping produced a QUIRC_MAX_VERSION grid for
      * a symbol that is physically larger, so sampling ran on the wrong lattice
