@@ -180,8 +180,9 @@ struct quirc_point {
 
 struct quirc_region {
   struct quirc_point seed;
-  int count;
+  int count; /* Area in pixels; 0 if the fill ran out of stack */
   int capstone;
+  int16_t x0, y0, x1, y1; /* Bounding box */
 };
 
 struct quirc_capstone {
@@ -230,7 +231,6 @@ struct k_quirc {
   size_t image_capacity; /* Allocated pixels; independent of active w/h. */
   uint8_t *flood_fill_stack;
   bool owns_pixels;
-  bool flood_fill_overflow;
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
   int threshold_offset;
   /* Finder-pattern areas summed over every capstone found this frame.  Kept
