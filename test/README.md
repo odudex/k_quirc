@@ -13,7 +13,7 @@ cmake --build build
 This compiles the core k_quirc sources directly (not as an ESP component) with two optional algorithms enabled:
 
 - `K_QUIRC_ADAPTIVE_THRESHOLD` — auto-adjust binarization threshold from timing patterns
-- `K_QUIRC_BILINEAR_THRESHOLD` — four-quadrant Otsu thresholding for uneven lighting
+- `K_QUIRC_BILINEAR_THRESHOLD` — threshold follows the local white level, for uneven lighting
 
 ## Test Images
 
@@ -78,6 +78,16 @@ after building. No external samples are needed. From the Kern repository root,
 ```
 
 The gap between the two levels makes Otsu's between-class variance flat across a whole range of thresholds, so which end of that plateau the argmax reports decides whether the adaptive offset lands in the gap or on top of a mode. The pgm samples and the validation matrix cannot see this: their light level is a pure 255, where the offset clamps and the failure hides.
+
+## Uneven Light
+
+`k_quirc_falloff_test` dims checked-in vectors towards each corner of the frame in turn, down to a quarter of the light at the frame's corner and faster the nearer it, as a lens vignettes and a screen read at an angle fades. Each is held for a few frames in one context and must decode:
+
+```bash
+./build/k_quirc_falloff_test [vectors-dir]
+```
+
+A capture that prompted it measured white at 232 in the centre and 110 in the code's far corner. A threshold taken from the centre sits at that corner's white level, so the corner binarizes solid dark, and on an animated sequence the same parts fail every time round. Every other vector and the validation matrix are evenly lit and cannot see it.
 
 ## Malformed Payloads
 

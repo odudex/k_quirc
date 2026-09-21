@@ -9,18 +9,20 @@ one:
     .text
     .align 4
 
-/* void k_quirc_binarize_pie(uint8_t *pixels, int blocks, const uint8_t *t)
+/* void k_quirc_binarize_pie(uint8_t *pixels, int blocks, const uint8_t *t,
+ *                           int t_stride)
  *
- * pixels[i] = pixels[i] < *t, over `blocks` runs of 16 pixels.  The pixels
- * must be 16-byte aligned: the vector load and store ignore the low bits of
- * the address. */
+ * pixels[i] = pixels[i] < *t, over `blocks` runs of 16 pixels, t advancing
+ * t_stride bytes a run: 0 holds one threshold throughout, 1 takes one per run.
+ * The pixels must be 16-byte aligned: the vector load and store ignore the low
+ * bits of the address. */
     .global k_quirc_binarize_pie
     .type k_quirc_binarize_pie, @function
 k_quirc_binarize_pie:
-    la a3, one
-    esp.vldbc.8.ip q1, a2, 0
-    esp.vldbc.8.ip q2, a3, 0
+    la a4, one
+    esp.vldbc.8.ip q2, a4, 0
 1:
+    esp.vldbc.8.xp q1, a2, a3
     esp.vld.128.ip q0, a0, 0
     esp.vcmp.lt.u8 q0, q0, q1
     esp.andq       q0, q0, q2
