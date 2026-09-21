@@ -468,7 +468,8 @@ static inline int clamp_threshold(int t) {
 }
 
 #ifdef K_QUIRC_PIE
-void k_quirc_binarize_pie(uint8_t *pixels, int blocks, const uint8_t *t);
+void k_quirc_binarize_pie(uint8_t *pixels, int blocks, const uint8_t *t,
+                          int t_stride);
 #define K_QUIRC_BINARIZE_ALIGN 15
 #else
 #define K_QUIRC_BINARIZE_ALIGN 3
@@ -491,7 +492,7 @@ ALWAYS_INLINE void binarize_span(quirc_pixel_t *p, int len, int t,
 #ifdef K_QUIRC_PIE
     if (!xor_mask && len - i >= 16) {
       uint8_t t8 = (uint8_t)t;
-      k_quirc_binarize_pie(p + i, (len - i) / 16, &t8);
+      k_quirc_binarize_pie(p + i, (len - i) / 16, &t8, 0);
       i += (len - i) & ~15;
     }
 #endif
@@ -531,126 +532,239 @@ static uint32_t histogram_rect(const quirc_pixel_t *pixels, int stride, int x0,
   return samples;
 }
 
+#ifdef K_QUIRC_BILINEAR_THRESHOLD
+/*
+ * The threshold follows the image's white level, measured per block of a mesh
+ * and interpolated between the blocks' centres.
+ *
+ * A screen read at an angle through an uncorrected lens can show its far
+ * corner at half the white level of its centre, and that corner is the one
+ * without a finder.  Otsu's threshold of the centre, which sets the operating
+ * point, is therefore scaled by how the white level found locally compares
+ * with the centre's.  Under even light that is the centre's threshold
+ * everywhere.
+ */
+#define THRESHOLD_MAX_GRID 8
+#define THRESHOLD_MIN_BLOCK 64
+#define THRESHOLD_BINS 64
+#define THRESHOLD_BIN_SHIFT 2
+#define THRESHOLD_SAMPLE_STEP 3
+#define THRESHOLD_SAME_LIGHT 2
+#define THRESHOLD_CELL 16
+#define THRESHOLD_MAX_CELLS (K_QUIRC_MAX_IMAGE_DIM / THRESHOLD_CELL + 2)
+
+static int threshold_grid(int dim) {
+  int blocks = dim / THRESHOLD_MIN_BLOCK;
+  return blocks < 1                    ? 1
+         : blocks > THRESHOLD_MAX_GRID ? THRESHOLD_MAX_GRID
+                                       : blocks;
+}
+
+/* The bin a 64th of a histogram's samples lie beyond, from the top or from the
+ * bottom.  Blur dims a lone white module but not the widest white a region
+ * holds, so the top one is its white level whatever the size of its features,
+ * quiet zone and dense data alike. */
+static int histogram_tail(const uint32_t *hist, int bins, uint32_t total,
+                          bool top) {
+  uint32_t beyond = 0;
+  int i = top ? bins - 1 : 0;
+  int last = top ? 0 : bins - 1;
+  int step = top ? -1 : 1;
+
+  while (i != last && (beyond += hist[i]) * 64 < total)
+    i += step;
+  return i;
+}
+
+/* Where along a mesh of `blocks` blocks of `size` a position falls: the block
+ * whose centre precedes it, and how far towards the next it is, of 256.
+ * Constant beyond the outermost centres. */
+static void threshold_mesh_at(int pos, int size, int blocks, int *block,
+                              int *weight) {
+  int at = (pos * 256 - size * 128) / size;
+
+  if (at < 0)
+    at = 0;
+  if (at > (blocks - 1) * 256)
+    at = (blocks - 1) * 256;
+  *block = at >> 8;
+  *weight = at & 255;
+}
+
+/* Binarize a row whose threshold is t[k] over its k-th run of 16 pixels.  The
+ * runs are laid on 16-byte boundaries of memory, where the vector unit works,
+ * so they start up to 15 pixels into the row; the threshold hardly changes
+ * over that. */
+ALWAYS_INLINE void binarize_row(quirc_pixel_t *row, int w, const uint8_t *t) {
+  int head = (int)(-(uintptr_t)row & (THRESHOLD_CELL - 1));
+
+  if (head > w)
+    head = w;
+  int blocks = (w - head) / THRESHOLD_CELL;
+  int tail = head + blocks * THRESHOLD_CELL;
+  const uint8_t *cell = t + (head + THRESHOLD_CELL / 2) / THRESHOLD_CELL;
+
+  binarize_span(row, head, t[0], 0);
+#ifdef K_QUIRC_PIE
+  if (blocks && sizeof(quirc_pixel_t) == 1) {
+    k_quirc_binarize_pie(row + head, blocks, cell, 1);
+  } else
+#endif
+  {
+    for (int b = 0; b < blocks; b++)
+      binarize_span(row + head + b * THRESHOLD_CELL, THRESHOLD_CELL, cell[b],
+                    0);
+  }
+  binarize_span(row + tail, w - tail, cell[blocks], 0);
+}
+
+/* Binarize against `t`, the threshold where the white level is bin `white`,
+ * scaled by the white level found around each pixel; `offset` is added after.
+ */
+HOT_FUNC
+static void binarize_by_white_level(struct k_quirc *q, int t, int white,
+                                    int offset) {
+  int w = q->w;
+  int h = q->h;
+  quirc_pixel_t *pixels = q->pixels;
+  int gx = threshold_grid(w);
+  int gy = threshold_grid(h);
+  int bw = (w + gx - 1) / gx;
+  int bh = (h + gy - 1) / gy;
+  int16_t t_block[THRESHOLD_MAX_GRID * THRESHOLD_MAX_GRID];
+  int16_t t_local[THRESHOLD_MAX_GRID * THRESHOLD_MAX_GRID];
+
+  /* A row of blocks at a time: its histograms fit the stack and the cache */
+  for (int by = 0; by < gy; by++) {
+    uint16_t hist[THRESHOLD_MAX_GRID][THRESHOLD_BINS];
+    int y1 = (by + 1) * bh < h ? (by + 1) * bh : h;
+
+    memset(hist, 0, sizeof(hist));
+    for (int y = by * bh; y < y1; y += THRESHOLD_SAMPLE_STEP) {
+      const quirc_pixel_t *row = pixels + y * w;
+      for (int bx = 0; bx < gx; bx++) {
+        uint16_t *block = hist[bx];
+        int x1 = (bx + 1) * bw < w ? (bx + 1) * bw : w;
+        for (int x = bx * bw; x < x1; x += THRESHOLD_SAMPLE_STEP)
+          block[row[x] >> THRESHOLD_BIN_SHIFT]++;
+      }
+    }
+
+    for (int bx = 0; bx < gx; bx++) {
+      uint32_t wide[THRESHOLD_BINS];
+      uint32_t total = 0;
+      for (int i = 0; i < THRESHOLD_BINS; i++) {
+        wide[i] = hist[bx][i];
+        total += wide[i];
+      }
+      int local = histogram_tail(wide, THRESHOLD_BINS, total, true);
+      int dark = histogram_tail(wide, THRESHOLD_BINS, total, false);
+      int level = t;
+      /* Without both classes a block is background or quiet zone, whose level
+       * says nothing of the light on the code.  Within two bins of the
+       * centre's it is the same light, measured twice.  Only dimmer is
+       * followed: the centre's threshold already clears anything brighter. */
+      if (2 * dark > local)
+        level = -1;
+      else if (white - local > THRESHOLD_SAME_LIGHT)
+        level = t * (2 * local + 1) / (2 * white + 1);
+      t_local[by * gx + bx] = (int16_t)level;
+    }
+  }
+
+  /* Those take after the blocks around them, or failing any, the centre */
+  for (int by = 0; by < gy; by++) {
+    for (int bx = 0; bx < gx; bx++) {
+      int sum = 0;
+      int n = 0;
+
+      t_block[by * gx + bx] = t_local[by * gx + bx];
+      if (t_local[by * gx + bx] >= 0)
+        continue;
+      for (int ny = by - 1; ny <= by + 1; ny++) {
+        for (int nx = bx - 1; nx <= bx + 1; nx++) {
+          if (nx < 0 || ny < 0 || nx >= gx || ny >= gy ||
+              t_local[ny * gx + nx] < 0)
+            continue;
+          sum += t_local[ny * gx + nx];
+          n++;
+        }
+      }
+      t_block[by * gx + bx] = (int16_t)(n ? sum / n : t);
+    }
+  }
+
+  /* Each 16-pixel cell of a row lies between the same two columns of blocks
+   * whatever the row */
+  uint8_t cell_block[THRESHOLD_MAX_CELLS];
+  uint8_t cell_weight[THRESHOLD_MAX_CELLS];
+  uint8_t cell_t[THRESHOLD_MAX_CELLS];
+  int cells = w / THRESHOLD_CELL + 2;
+
+  for (int k = 0; k < cells; k++) {
+    int block, weight;
+    threshold_mesh_at(k * THRESHOLD_CELL + THRESHOLD_CELL / 2, bw, gx, &block,
+                      &weight);
+    cell_block[k] = (uint8_t)block;
+    cell_weight[k] = (uint8_t)weight;
+  }
+
+  for (int y = 0; y < h; y++) {
+    /* The thresholds move a level or two in four rows */
+    if ((y & 3) == 0) {
+      int column[THRESHOLD_MAX_GRID + 1];
+      int block, weight;
+
+      threshold_mesh_at(y + 2, bh, gy, &block, &weight);
+      const int16_t *upper = t_block + block * gx;
+      const int16_t *lower =
+          t_block + (block + 1 < gy ? block + 1 : block) * gx;
+      for (int bx = 0; bx < gx; bx++)
+        column[bx] = upper[bx] * (256 - weight) + lower[bx] * weight;
+      column[gx] = column[gx - 1];
+
+      for (int k = 0; k < cells; k++) {
+        int b = cell_block[k];
+        int level = (column[b] * (256 - cell_weight[k]) +
+                     column[b + 1] * cell_weight[k]) >>
+                    16;
+        cell_t[k] = (uint8_t)clamp_threshold(level + offset);
+      }
+    }
+    binarize_row(pixels + y * w, w, cell_t);
+  }
+}
+#endif /* K_QUIRC_BILINEAR_THRESHOLD */
+
 HOT_FUNC
 static void threshold(struct k_quirc *q, bool inverted) {
   int w = q->w;
   int h = q->h;
-  quirc_pixel_t *pixels = q->pixels;
+  int margin_x = (int)(w * K_QUIRC_THRESHOLD_MARGIN);
+  int margin_y = (int)(h * K_QUIRC_THRESHOLD_MARGIN);
+  uint32_t histogram[256];
+  uint32_t sampled_pixels = histogram_rect(
+      q->pixels, w, margin_x, margin_y, w - margin_x, h - margin_y, histogram);
+  int t = otsu_threshold(histogram, sampled_pixels);
+  int offset = 0;
+
+#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
+  offset = q->threshold_offset;
+#endif
+
+#ifdef K_QUIRC_BILINEAR_THRESHOLD
+  /* An inverted image's light is its ink, and ink has no level to follow */
+  if (!inverted) {
+    int white = histogram_tail(histogram, 256, sampled_pixels, true);
+    binarize_by_white_level(q, t, white >> THRESHOLD_BIN_SHIFT, offset);
+    return;
+  }
+#endif
 
   /* XOR mask unifies inverted/non-inverted into a single comparison.
    * Normal: pixel < threshold = black. Inverted: (pixel^0xFF) < threshold. */
-  uint8_t xor_mask = inverted ? 0xFF : 0x00;
-
-#ifdef K_QUIRC_BILINEAR_THRESHOLD
-  int mid_x = w / 2;
-  int mid_y = h / 2;
-
-  int half_w = (int)(w * (0.5f - K_QUIRC_THRESHOLD_MARGIN));
-  int half_h = (int)(h * (0.5f - K_QUIRC_THRESHOLD_MARGIN));
-  int sample_start_x = mid_x - half_w;
-  int sample_end_x = mid_x + half_w;
-  int sample_start_y = mid_y - half_h;
-  int sample_end_y = mid_y + half_h;
-
-  /* Process one quadrant at a time: a single 1 KB histogram on the stack
-   * instead of four (4 KB), and better cache locality. */
-  uint32_t hist[256];
-  int t_quad[4]; /* tl, tr, bl, br */
-  static const struct {
-    uint8_t left, top;
-  } quad_map[4] = {{1, 1}, {0, 1}, {1, 0}, {0, 0}};
-
-  for (int qi = 0; qi < 4; qi++) {
-    int x0 = quad_map[qi].left ? sample_start_x : mid_x;
-    int x1 = quad_map[qi].left ? mid_x : sample_end_x;
-    int y0 = quad_map[qi].top ? sample_start_y : mid_y;
-    int y1 = quad_map[qi].top ? mid_y : sample_end_y;
-
-    uint32_t samples = histogram_rect(pixels, w, x0, y0, x1, y1, hist);
-#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-    t_quad[qi] =
-        clamp_threshold(otsu_threshold(hist, samples) + q->threshold_offset);
-#else
-    t_quad[qi] = otsu_threshold(hist, samples);
-#endif
-  }
-
-  int t_tl = t_quad[0];
-  int t_tr = t_quad[1];
-  int t_bl = t_quad[2];
-  int t_br = t_quad[3];
-
-  /* Fixed-point 16.16 bilinear interpolation — all integer math.
-   * Scale by multiplication, not <<: the quadrant differences are signed and
-   * left-shifting a negative value is undefined in C99/C11. clamp_threshold()
-   * bounds every t_* to 0..255, so the products stay within +/-16711680 and
-   * cannot overflow int32 - no need for the int64_t widening used further
-   * down, which would cost a 64-bit divide on a 32-bit core. */
-  int inv_h_dim = (h > 1) ? h - 1 : 1;
-  int tl_fp = t_tl * 65536;
-  int tr_fp = t_tr * 65536;
-  int dl_fp = ((t_bl - t_tl) * 65536) / inv_h_dim;
-  int dr_fp = ((t_br - t_tr) * 65536) / inv_h_dim;
-
-  int inv_w_dim = (w > 1) ? w - 1 : 1;
-
-  for (int y = 0; y < h; y++) {
-    int t_left_fp = tl_fp + y * dl_fp;
-    int t_right_fp = tr_fp + y * dr_fp;
-    int delta = t_right_fp - t_left_fp;
-    quirc_pixel_t *row = pixels + y * w;
-
-    /* t(x) = (t_left_fp + x * step_fp) >> 16 is monotone along the row, so
-     * solve for each span of constant threshold and binarize it branch-free.
-     * All in 32 bits, which keeps the divisions in hardware. */
-    int step_fp = delta / inv_w_dim;
-    if (step_fp == 0) {
-      binarize_span(row, w, t_left_fp >> 16, xor_mask);
-      continue;
-    }
-
-    int x = 0;
-    while (x < w) {
-      int t = (t_left_fp + x * step_fp) >> 16;
-      int x_next;
-
-      if (step_fp > 0) /* first x where t(x) reaches t + 1 */
-        x_next = ((t + 1) * 65536 - t_left_fp + step_fp - 1) / step_fp;
-      else /* first x where t(x) drops below t */
-        x_next = (t_left_fp - t * 65536 - step_fp) / -step_fp;
-
-      if (x_next <= x)
-        x_next = x + 1;
-      if (x_next > w)
-        x_next = w;
-
-      binarize_span(row + x, x_next - x, t, xor_mask);
-      x = x_next;
-    }
-  }
-
-#else /* !K_QUIRC_BILINEAR_THRESHOLD */
-  int margin_x = (int)(w * K_QUIRC_THRESHOLD_MARGIN);
-  int margin_y = (int)(h * K_QUIRC_THRESHOLD_MARGIN);
-  int sample_start_x = margin_x;
-  int sample_end_x = w - margin_x;
-  int sample_start_y = margin_y;
-  int sample_end_y = h - margin_y;
-
-  uint32_t histogram[256];
-  uint32_t sampled_pixels =
-      histogram_rect(pixels, w, sample_start_x, sample_start_y, sample_end_x,
-                     sample_end_y, histogram);
-
-#ifdef K_QUIRC_ADAPTIVE_THRESHOLD
-  uint8_t t = clamp_threshold(otsu_threshold(histogram, sampled_pixels) +
-                              q->threshold_offset);
-#else
-  uint8_t t = otsu_threshold(histogram, sampled_pixels);
-#endif
-
-  binarize_span(pixels, w * h, t, xor_mask);
-#endif /* K_QUIRC_BILINEAR_THRESHOLD */
+  binarize_span(q->pixels, w * h, clamp_threshold(t + offset),
+                inverted ? 0xFF : 0x00);
 }
 
 HOT_FUNC

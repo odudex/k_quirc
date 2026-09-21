@@ -25,7 +25,7 @@ endif()
 # Comment out to disable
 target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_ADAPTIVE_THRESHOLD)
 
-# Bilinear threshold interpolation - uses four quadrants for uneven lighting
+# Threshold follows the white level across the image, for uneven lighting
 # Comment out to disable (uses single global threshold instead)
 target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_BILINEAR_THRESHOLD)
 

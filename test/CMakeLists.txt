@@ -80,6 +80,28 @@ target_compile_definitions(k_quirc_bimodal_test PRIVATE
 target_compile_options(k_quirc_bimodal_test PRIVATE -Wall -Wextra -Wno-unused-function -O2)
 target_link_libraries(k_quirc_bimodal_test m)
 
+add_executable(k_quirc_falloff_test
+    test_falloff.c
+    ${K_QUIRC_SRC_DIR}/k_quirc.c
+    ${K_QUIRC_SRC_DIR}/k_quirc_version.c
+    ${K_QUIRC_SRC_DIR}/k_quirc_identify.c
+    ${K_QUIRC_SRC_DIR}/k_quirc_decode.c
+)
+
+target_include_directories(k_quirc_falloff_test PRIVATE
+    ${K_QUIRC_INC_DIR}
+    ${K_QUIRC_SRC_DIR}
+)
+
+target_compile_definitions(k_quirc_falloff_test PRIVATE
+    K_QUIRC_ADAPTIVE_THRESHOLD
+    K_QUIRC_BILINEAR_THRESHOLD
+    FALLOFF_VECTORS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/convergence/vectors"
+)
+
+target_compile_options(k_quirc_falloff_test PRIVATE -Wall -Wextra -Wno-unused-function -O2)
+target_link_libraries(k_quirc_falloff_test m)
+
 target_include_directories(k_quirc_test PRIVATE
     ${K_QUIRC_INC_DIR}
     ${K_QUIRC_SRC_DIR}
@@ -168,4 +190,5 @@ add_test(NAME api COMMAND k_quirc_api_test)
 add_test(NAME version_db COMMAND k_quirc_version_db_test)
 add_test(NAME decode_payload COMMAND k_quirc_decode_payload_test)
 add_test(NAME bimodal COMMAND k_quirc_bimodal_test)
+add_test(NAME falloff COMMAND k_quirc_falloff_test)
 add_test(NAME convergence COMMAND k_quirc_convergence_test --min-lock 10 --min-yield 100)

@@ -13,7 +13,7 @@ A standalone QR code recognition and decoding library optimized for embedded sys
 
 ### Optimizations over upstream quirc
 
-- **Bilinear thresholding** -- 4-quadrant Otsu with fixed-point 16.16 interpolation handles uneven lighting
+- **White-level thresholding** -- Otsu's threshold of the centre, scaled by the white level measured per block and interpolated between blocks, handles uneven lighting
 - **Adaptive threshold** -- auto-adjusts offset from timing pattern analysis for improved reliability
 - **Span-based flood fill** -- line-based fill with explicit stack avoids recursion; neighbor-row scans resume where they stopped instead of rescanning from the span edge
 - **Constant-threshold binarization spans** -- the interpolated row threshold is decomposed into exact constant spans, so the per-pixel loop is branch-free and SIMD-friendly
@@ -86,7 +86,7 @@ Feature flags are set as compile definitions in `CMakeLists.txt`:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `K_QUIRC_BILINEAR_THRESHOLD` | Enabled | 4-quadrant Otsu thresholding for uneven lighting |
+| `K_QUIRC_BILINEAR_THRESHOLD` | Enabled | Threshold follows the local white level, for uneven lighting |
 | `K_QUIRC_ADAPTIVE_THRESHOLD` | Enabled | Auto-adjust threshold offset from timing patterns |
 | `K_QUIRC_DEBUG` | Disabled | Debug visualization (thresholded buffer with grid overlays) |
 

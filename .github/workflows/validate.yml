@@ -65,6 +65,9 @@ jobs:
       - name: Run two-level image test
         run: test/build_ci/k_quirc_bimodal_test
 
+      - name: Run uneven light test
+        run: test/build_ci/k_quirc_falloff_test
+
       - name: Run threshold convergence test
         run: test/build_ci/k_quirc_convergence_test
 
@@ -84,6 +87,7 @@ jobs:
           test/build_asan/k_quirc_decode_payload_test
           test/build_asan/k_quirc_api_test
           test/build_asan/k_quirc_bimodal_test
+          test/build_asan/k_quirc_falloff_test
           test/build_asan/k_quirc_convergence_test
 
       # Sanitized sweep over real images. Deliberately a narrow slice of the
