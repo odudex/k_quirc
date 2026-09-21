@@ -280,26 +280,6 @@ perspective_setup_direct(float *c, const float img[4][2],
   return solve_8x8_system(A, b, c);
 }
 
-static K_QUIRC_WARN_UNUSED_RESULT int
-perspective_unmap(const float *c, const struct quirc_point *in, float *u,
-                  float *v) {
-  float x = in->x;
-  float y = in->y;
-  float den = -c[0] * c[7] * y + c[1] * c[6] * y +
-              (c[3] * c[7] - c[4] * c[6]) * x + c[0] * c[4] - c[1] * c[3];
-
-  if (fabsf(den) < 1e-6f)
-    return 0;
-
-  *u = -(c[1] * (y - c[5]) - c[2] * c[7] * y + (c[5] * c[7] - c[4]) * x +
-         c[2] * c[4]) /
-       den;
-  *v = (c[0] * (y - c[5]) - c[2] * c[6] * y + (c[5] * c[6] - c[3]) * x +
-        c[2] * c[3]) /
-       den;
-  return 1;
-}
-
 /*
  * Span-based flood fill from reg->seed, recording the region's area and
  * bounding box.  Out of stack, the area is left at 0.
@@ -1166,54 +1146,139 @@ static void finder_scan(struct k_quirc *q, int y) {
   }
 }
 
+/* Cells of the 5x5 alignment pattern that disagree with the image around a
+ * centre, 16.16, a module being (ux, uy) along u and (vx, vy) along v.  The
+ * pattern is symmetric, so which way the axes run is moot. */
+static int alignment_pattern_errors(const struct k_quirc *q, int px, int py,
+                                    int ux, int uy, int vx, int vy) {
+  int errors = 0;
+
+  for (int j = -2; j <= 2; j++) {
+    for (int i = -2; i <= 2; i++) {
+      int x = (px + i * ux + j * vx) >> 16;
+      int y = (py + i * uy + j * vy) >> 16;
+      int ring = abs(i) > abs(j) ? abs(i) : abs(j);
+      bool dark = x >= 0 && y >= 0 && x < q->w && y < q->h &&
+                  q->pixels[y * q->w + x] != QUIRC_PIXEL_WHITE;
+      errors += dark != (ring != 1);
+    }
+  }
+  return errors;
+}
+
+/* Half a module along a finder edge's direction at the corner without a
+ * finder, 16.16.  Each finder measures the pitch where it stands, seven
+ * modules to `edge`; across a plane in perspective it is the pitch's
+ * reciprocal that varies linearly, so the fourth corner's is the two adjacent
+ * finders' less the opposite one's. */
+static bool far_corner_half_module(const struct k_quirc *q,
+                                   const struct quirc_grid *qr, int edge,
+                                   int *hx, int *hy) {
+  float inv_len = 0.0f;
+  float dx = 0.0f;
+  float dy = 0.0f;
+
+  for (int i = 0; i < 3; i++) {
+    const struct quirc_point *c = q->capstones[qr->caps[i]].corners;
+    float ex = (float)(c[edge].x - c[0].x);
+    float ey = (float)(c[edge].y - c[0].y);
+    float len = sqrtf(ex * ex + ey * ey);
+    float sign = (i == 1) ? -1.0f : 1.0f;
+
+    if (len < 1.0f)
+      return false;
+    inv_len += sign / len;
+    dx += sign * ex / len;
+    dy += sign * ey / len;
+  }
+
+  /* Near-parallel finder edges extrapolate to anything at all; no symbol's
+   * seven modules outgrow the image */
+  float norm = sqrtf(dx * dx + dy * dy);
+  int dim = q->w > q->h ? q->w : q->h;
+  if (inv_len * (float)dim < 1.0f || norm < 0.5f)
+    return false;
+
+  float k = 65536.0f / (14.0f * inv_len * norm);
+  *hx = (int)(dx * k);
+  *hy = (int)(dy * k);
+  return true;
+}
+
+/* Of 25 cells.  Data mistaken for the pattern scores around 12. */
+#define ALIGNMENT_PATTERN_MAX_ERRORS 3
+
+/*
+ * Locate the alignment pattern nearest the corner without a finder, the
+ * fourth point the perspective hangs from, by its rings.
+ *
+ * Its centre is one dark module, and so is much of a dense code's data, while
+ * the estimate to start from extends the finders' edges across the whole
+ * symbol and lands a module or two out on a large one: the first region of a
+ * module's size found near it is data about as often as not, and an anchor
+ * that far out costs the read.  So slide the pattern over the neighbourhood in
+ * half modules, and take the best match nearest the estimate.
+ */
 static void find_alignment_pattern(struct k_quirc *q, int index) {
   struct quirc_grid *qr = &q->grids[index];
-  struct quirc_capstone *c0 = &q->capstones[qr->caps[0]];
-  struct quirc_capstone *c2 = &q->capstones[qr->caps[2]];
-  struct quirc_point a;
-  struct quirc_point b;
-  struct quirc_point c;
-  int size_estimate;
-  int step_size = 1;
-  int dir = 0;
-  float u, v;
+  int ux, uy, vx, vy;
 
-  memcpy(&b, &qr->align, sizeof(b));
-
-  if (!perspective_unmap(c0->c, &b, &u, &v))
+  if (qr->align.x < 0 || qr->align.y < 0 || qr->align.x >= q->w ||
+      qr->align.y >= q->h)
     return;
-  perspective_map(c0->c, u, v + 1.0f, &a);
-  if (!perspective_unmap(c2->c, &b, &u, &v))
+
+  if (!far_corner_half_module(q, qr, 1, &ux, &uy) ||
+      !far_corner_half_module(q, qr, 3, &vx, &vy))
     return;
-  perspective_map(c2->c, u + 1.0f, v, &c);
 
-  size_estimate = abs((a.x - b.x) * -(c.y - b.y) + (a.y - b.y) * (c.x - b.x));
+  int x0 = qr->align.x * 65536 + 32768;
+  int y0 = qr->align.y * 65536 + 32768;
+  int reach = qr->grid_size / 10;
+  int best = ALIGNMENT_PATTERN_MAX_ERRORS + 1;
+  int best_i = 0, best_j = 0, best_d = 0;
 
-  while (step_size * step_size < size_estimate * 100) {
-    static const int dx_map[] = {1, 0, -1, 0};
-    static const int dy_map[] = {0, -1, 0, 1};
-
-    for (int i = 0; i < step_size; i++) {
-      int code = region_code(q, b.x, b.y);
-
-      if (code >= 0) {
-        struct quirc_region *reg = &q->regions[code];
-
-        if (reg->count >= size_estimate / 2 &&
-            reg->count <= size_estimate * 2) {
-          qr->align_region = code;
-          return;
-        }
+  if (reach < 6)
+    reach = 6;
+  for (int j = -reach; j <= reach; j++) {
+    for (int i = -reach; i <= reach; i++) {
+      int errors = alignment_pattern_errors(q, x0 + i * ux + j * vx,
+                                            y0 + i * uy + j * vy, 2 * ux,
+                                            2 * uy, 2 * vx, 2 * vy);
+      int d = i * i + j * j;
+      if (errors < best || (errors == best && d < best_d)) {
+        best = errors;
+        best_i = i;
+        best_j = j;
+        best_d = d;
       }
-
-      b.x += dx_map[dir];
-      b.y += dy_map[dir];
     }
-
-    dir = (dir + 1) % 4;
-    if (!(dir & 1))
-      step_size++;
   }
+  if (best > ALIGNMENT_PATTERN_MAX_ERRORS)
+    return;
+
+  /* The pattern matches over a small plateau around its centre, which is
+   * the mean of the positions next to the winner that do as well */
+  int n = 0, sum_i = 0, sum_j = 0;
+  for (int j = best_j - 1; j <= best_j + 1; j++) {
+    for (int i = best_i - 1; i <= best_i + 1; i++) {
+      if (alignment_pattern_errors(q, x0 + i * ux + j * vx,
+                                   y0 + i * uy + j * vy, 2 * ux, 2 * uy, 2 * vx,
+                                   2 * vy) != best)
+        continue;
+      sum_i += i;
+      sum_j += j;
+      n++;
+    }
+  }
+  qr->align.x = (x0 + (sum_i * ux + sum_j * vx) / n) >> 16;
+  qr->align.y = (y0 + (sum_i * uy + sum_j * vy) / n) >> 16;
+
+  /* The centre module's own centre of mass is finer still, where it stands
+   * alone as it should */
+  int module_area = abs((ux >> 7) * (vy >> 7) - (uy >> 7) * (vx >> 7)) >> 16;
+  int code = region_code(q, qr->align.x, qr->align.y);
+  if (code >= 0 && q->regions[code].count <= 3 * module_area)
+    qr->align_region = code;
 }
 
 /*
