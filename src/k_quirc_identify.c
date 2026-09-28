@@ -598,6 +598,207 @@ ALWAYS_INLINE void binarize_row(quirc_pixel_t *row, int w, const uint8_t *t) {
   binarize_span(row + tail, w - tail, cell[blocks], 0);
 }
 
+/* The block thresholds of a mesh, and where each cell of a row falls on it */
+struct threshold_mesh {
+  const int16_t *t_block;
+  const uint8_t *cell_block;
+  const uint8_t *cell_weight;
+  int gx, gy, bh, cells, offset;
+};
+
+/* Binarize rows y0 to y1 of the image against the mesh.  y0 is a multiple of
+ * four, where the cell thresholds are refreshed. */
+HOT_FUNC
+static void binarize_mesh_rows(quirc_pixel_t *pixels, int w,
+                               const struct threshold_mesh *m, int y0, int y1) {
+  uint8_t cell_t[THRESHOLD_MAX_CELLS];
+
+  for (int y = y0; y < y1; y++) {
+    /* The thresholds move a level or two in four rows */
+    if ((y & 3) == 0) {
+      int column[THRESHOLD_MAX_GRID + 1];
+      int block, weight;
+
+      threshold_mesh_at(y + 2, m->bh, m->gy, &block, &weight);
+      const int16_t *upper = m->t_block + block * m->gx;
+      const int16_t *lower =
+          m->t_block + (block + 1 < m->gy ? block + 1 : block) * m->gx;
+      for (int bx = 0; bx < m->gx; bx++)
+        column[bx] = upper[bx] * (256 - weight) + lower[bx] * weight;
+      column[m->gx] = column[m->gx - 1];
+
+      for (int k = 0; k < m->cells; k++) {
+        int b = m->cell_block[k];
+        int level = (column[b] * (256 - m->cell_weight[k]) +
+                     column[b + 1] * m->cell_weight[k]) >>
+                    16;
+        cell_t[k] = (uint8_t)clamp_threshold(level + m->offset);
+      }
+    }
+    binarize_row(pixels + y * w, w, cell_t);
+  }
+}
+#endif /* K_QUIRC_BILINEAR_THRESHOLD */
+
+/* A binarization, split between the cores where there are two: rows against a
+ * mesh, or with no mesh, pixels against one threshold throughout. */
+struct threshold_job {
+  quirc_pixel_t *pixels;
+  int w;
+#ifdef K_QUIRC_BILINEAR_THRESHOLD
+  const struct threshold_mesh *mesh;
+#endif
+  int t;
+  uint8_t xor_mask;
+};
+
+/* Binarize the job from `from` to `to`, rows or pixels as it has a mesh */
+HOT_FUNC
+static void threshold_part(const struct threshold_job *job, int from, int to) {
+#ifdef K_QUIRC_BILINEAR_THRESHOLD
+  if (job->mesh) {
+    binarize_mesh_rows(job->pixels, job->w, job->mesh, from, to);
+    return;
+  }
+#endif
+  binarize_span(job->pixels + from, to - from, job->t, job->xor_mask);
+}
+
+#ifdef K_QUIRC_DUAL_CORE
+/* Optional second-core dispatch: caller (e.g. MaixPy K210 port) provides a
+ * volatile dual_func pointer that core 1 polls and clears on completion. */
+typedef int (*dual_func_t)(int);
+extern volatile dual_func_t dual_func;
+
+enum {
+  K_QUIRC_DUAL_IDLE = 0,
+  K_QUIRC_DUAL_PENDING,
+  K_QUIRC_DUAL_RUNNING,
+  K_QUIRC_DUAL_DONE,
+  K_QUIRC_DUAL_CANCELED,
+};
+
+#ifndef K_QUIRC_DUAL_PENDING_SPINS
+#define K_QUIRC_DUAL_PENDING_SPINS 100000U
+#endif
+
+static volatile int g_thr_dual_state;
+
+static inline void dual_fence(void) {
+#if defined(__GNUC__) || defined(__clang__)
+  __sync_synchronize();
+#endif
+}
+
+static bool dual_try_start(dual_func_t func) {
+  dual_func_t expected = NULL;
+
+  if (g_thr_dual_state == K_QUIRC_DUAL_CANCELED && dual_func == NULL)
+    g_thr_dual_state = K_QUIRC_DUAL_IDLE;
+
+  if (g_thr_dual_state != K_QUIRC_DUAL_IDLE)
+    return false;
+
+  g_thr_dual_state = K_QUIRC_DUAL_PENDING;
+  dual_fence();
+
+#if defined(__GNUC__) || defined(__clang__)
+  if (__sync_bool_compare_and_swap(&dual_func, expected, func))
+    return true;
+#else
+  if (dual_func == NULL) {
+    dual_func = func;
+    return true;
+  }
+#endif
+
+  g_thr_dual_state = K_QUIRC_DUAL_IDLE;
+  return false;
+}
+
+static bool dual_worker_claim(void) {
+#if defined(__GNUC__) || defined(__clang__)
+  return __sync_bool_compare_and_swap(&g_thr_dual_state, K_QUIRC_DUAL_PENDING,
+                                      K_QUIRC_DUAL_RUNNING);
+#else
+  if (g_thr_dual_state != K_QUIRC_DUAL_PENDING)
+    return false;
+  g_thr_dual_state = K_QUIRC_DUAL_RUNNING;
+  return true;
+#endif
+}
+
+static void dual_worker_done(void) {
+  dual_fence();
+  g_thr_dual_state = K_QUIRC_DUAL_DONE;
+}
+
+static bool dual_wait_done(void) {
+  uint32_t pending_spins = 0;
+
+  for (;;) {
+    int state = g_thr_dual_state;
+
+    if (state == K_QUIRC_DUAL_DONE) {
+      dual_fence();
+      g_thr_dual_state = K_QUIRC_DUAL_IDLE;
+      return true;
+    }
+
+    if (state == K_QUIRC_DUAL_PENDING &&
+        ++pending_spins >= K_QUIRC_DUAL_PENDING_SPINS) {
+      /* Core 1 has not claimed the job, so this half can be run locally. */
+#if defined(__GNUC__) || defined(__clang__)
+      if (__sync_bool_compare_and_swap(&g_thr_dual_state, K_QUIRC_DUAL_PENDING,
+                                       K_QUIRC_DUAL_CANCELED)) {
+        dual_fence();
+        return false;
+      }
+#else
+      g_thr_dual_state = K_QUIRC_DUAL_CANCELED;
+      dual_fence();
+      return false;
+#endif
+    }
+  }
+}
+
+/* Core 1's half of the job.  What it points to lives on core 0's stack, which
+ * waits for it before returning. */
+static struct threshold_job g_thr_job;
+static int g_thr_from;
+static int g_thr_to;
+
+static int threshold_core1(int core) {
+  (void)core;
+  if (!dual_worker_claim())
+    return 0;
+  threshold_part(&g_thr_job, g_thr_from, g_thr_to);
+  dual_worker_done();
+  return 0;
+}
+#endif /* K_QUIRC_DUAL_CORE */
+
+/* Binarize the job from 0 to `end`, handing `split` onwards to core 1 when it
+ * is free, or doing it here if core 1 never takes it up. */
+static void threshold_run(const struct threshold_job *job, int split, int end) {
+#ifdef K_QUIRC_DUAL_CORE
+  g_thr_job = *job;
+  g_thr_from = split;
+  g_thr_to = end;
+  if (dual_try_start(threshold_core1)) {
+    threshold_part(job, 0, split);
+    if (!dual_wait_done())
+      threshold_part(job, split, end);
+    return;
+  }
+#else
+  (void)split;
+#endif
+  threshold_part(job, 0, end);
+}
+
+#ifdef K_QUIRC_BILINEAR_THRESHOLD
 /* Binarize against `t`, the threshold where the white level is bin `white`,
  * scaled by the white level found around each pixel; `offset` is added after.
  */
@@ -678,7 +879,6 @@ static void binarize_by_white_level(struct k_quirc *q, int t, int white,
    * whatever the row */
   uint8_t cell_block[THRESHOLD_MAX_CELLS];
   uint8_t cell_weight[THRESHOLD_MAX_CELLS];
-  uint8_t cell_t[THRESHOLD_MAX_CELLS];
   int cells = w / THRESHOLD_CELL + 2;
 
   for (int k = 0; k < cells; k++) {
@@ -689,30 +889,18 @@ static void binarize_by_white_level(struct k_quirc *q, int t, int white,
     cell_weight[k] = (uint8_t)weight;
   }
 
-  for (int y = 0; y < h; y++) {
-    /* The thresholds move a level or two in four rows */
-    if ((y & 3) == 0) {
-      int column[THRESHOLD_MAX_GRID + 1];
-      int block, weight;
+  struct threshold_mesh mesh = {.t_block = t_block,
+                                .cell_block = cell_block,
+                                .cell_weight = cell_weight,
+                                .gx = gx,
+                                .gy = gy,
+                                .bh = bh,
+                                .cells = cells,
+                                .offset = offset};
+  struct threshold_job job = {.pixels = pixels, .w = w, .mesh = &mesh};
 
-      threshold_mesh_at(y + 2, bh, gy, &block, &weight);
-      const int16_t *upper = t_block + block * gx;
-      const int16_t *lower =
-          t_block + (block + 1 < gy ? block + 1 : block) * gx;
-      for (int bx = 0; bx < gx; bx++)
-        column[bx] = upper[bx] * (256 - weight) + lower[bx] * weight;
-      column[gx] = column[gx - 1];
-
-      for (int k = 0; k < cells; k++) {
-        int b = cell_block[k];
-        int level = (column[b] * (256 - cell_weight[k]) +
-                     column[b + 1] * cell_weight[k]) >>
-                    16;
-        cell_t[k] = (uint8_t)clamp_threshold(level + offset);
-      }
-    }
-    binarize_row(pixels + y * w, w, cell_t);
-  }
+  /* Split on a multiple of four rows, where the cell thresholds refresh */
+  threshold_run(&job, (h / 2) & ~3, h);
 }
 #endif /* K_QUIRC_BILINEAR_THRESHOLD */
 
@@ -743,8 +931,12 @@ static void threshold(struct k_quirc *q, bool inverted) {
 
   /* XOR mask unifies inverted/non-inverted into a single comparison.
    * Normal: pixel < threshold = black. Inverted: (pixel^0xFF) < threshold. */
-  binarize_span(q->pixels, w * h, clamp_threshold(t + offset),
-                inverted ? 0xFF : 0x00);
+  struct threshold_job job = {.pixels = q->pixels,
+                              .w = w,
+                              .t = clamp_threshold(t + offset),
+                              .xor_mask = inverted ? 0xFF : 0x00};
+
+  threshold_run(&job, w * h / 2, w * h);
 }
 
 HOT_FUNC
