@@ -162,6 +162,16 @@ typedef struct {
 #define K_QUIRC_DILATION_GAIN 200.0f
 #endif
 
+/* Blocks per side of the mesh the threshold follows the white level over
+ * (K_QUIRC_BILINEAR_THRESHOLD).  0 derives it from the image, a block per 64
+ * pixels.  Light falls off over a share of the frame rather than a number of
+ * pixels, so a project scanning at one resolution can fix it instead: where
+ * the blocks' edges fall on a dim corner decides whether that corner is seen.
+ */
+#ifndef K_QUIRC_THRESHOLD_GRID
+#define K_QUIRC_THRESHOLD_GRID 0
+#endif
+
 #if QUIRC_MAX_REGIONS < UINT8_MAX
 typedef uint8_t quirc_pixel_t;
 #elif QUIRC_MAX_REGIONS < UINT16_MAX

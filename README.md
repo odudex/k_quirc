@@ -89,6 +89,7 @@ Feature flags are set as compile definitions in `CMakeLists.txt`:
 | `K_QUIRC_BILINEAR_THRESHOLD` | Enabled | Threshold follows the local white level, for uneven lighting |
 | `K_QUIRC_ADAPTIVE_THRESHOLD` | Enabled | Auto-adjust threshold offset from timing patterns |
 | `K_QUIRC_DEBUG` | Disabled | Debug visualization (thresholded buffer with grid overlays) |
+| `K_QUIRC_THRESHOLD_GRID` | `0` | Blocks per side the white level is measured over; `0` derives it from the image (one per 64 pixels), `1`-`8` fixes it for a project scanning at one resolution |
 
 ## Constraints
 

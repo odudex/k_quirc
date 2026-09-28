@@ -526,6 +526,9 @@ static uint32_t histogram_rect(const quirc_pixel_t *pixels, int stride, int x0,
  */
 #define THRESHOLD_MAX_GRID 8
 #define THRESHOLD_MIN_BLOCK 64
+/* The least a fixed grid's blocks may shrink to: a 32-pixel block, sampled
+ * every third pixel, still puts two pixels in its white tail */
+#define THRESHOLD_FIXED_MIN_BLOCK 32
 #define THRESHOLD_BINS 64
 #define THRESHOLD_BIN_SHIFT 2
 #define THRESHOLD_SAMPLE_STEP 3
@@ -533,8 +536,18 @@ static uint32_t histogram_rect(const quirc_pixel_t *pixels, int stride, int x0,
 #define THRESHOLD_CELL 16
 #define THRESHOLD_MAX_CELLS (K_QUIRC_MAX_IMAGE_DIM / THRESHOLD_CELL + 2)
 
+#if K_QUIRC_THRESHOLD_GRID < 0 || K_QUIRC_THRESHOLD_GRID > THRESHOLD_MAX_GRID
+#error "K_QUIRC_THRESHOLD_GRID must be 0 (derived) or 1 to 8"
+#endif
+
 static int threshold_grid(int dim) {
   int blocks = dim / THRESHOLD_MIN_BLOCK;
+
+  if (K_QUIRC_THRESHOLD_GRID > 0) {
+    blocks = K_QUIRC_THRESHOLD_GRID;
+    if (blocks > dim / THRESHOLD_FIXED_MIN_BLOCK)
+      blocks = dim / THRESHOLD_FIXED_MIN_BLOCK;
+  }
   return blocks < 1                    ? 1
          : blocks > THRESHOLD_MAX_GRID ? THRESHOLD_MAX_GRID
                                        : blocks;
