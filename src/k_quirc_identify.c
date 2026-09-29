@@ -1466,8 +1466,10 @@ static void find_alignment_pattern(struct k_quirc *q, int index) {
   qr->align.y = (y0 + (sum_i * uy + sum_j * vy) / n) >> 16;
 
   /* The centre module's own centre of mass is finer still, where it stands
-   * alone as it should */
-  int module_area = abs((ux >> 7) * (vy >> 7) - (uy >> 7) * (vx >> 7)) >> 16;
+   * alone as it should.  The products outgrow an int on the largest images. */
+  int64_t cross =
+      (int64_t)(ux >> 7) * (vy >> 7) - (int64_t)(uy >> 7) * (vx >> 7);
+  int64_t module_area = (cross < 0 ? -cross : cross) >> 16;
   int code = region_code(q, qr->align.x, qr->align.y);
   if (code >= 0 && q->regions[code].count <= 3 * module_area)
     qr->align_region = code;
