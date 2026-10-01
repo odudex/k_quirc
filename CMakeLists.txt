@@ -5,6 +5,8 @@ set(k_quirc_srcs
     "src/k_quirc_decode.c")
 if(CONFIG_IDF_TARGET_ESP32P4)
     list(APPEND k_quirc_srcs "src/k_quirc_pie.S")
+elseif(CONFIG_IDF_TARGET_ESP32S3)
+    list(APPEND k_quirc_srcs "src/k_quirc_pie_s3.S")
 endif()
 
 idf_component_register(
@@ -16,8 +18,9 @@ idf_component_register(
 # Ignoring a K_QUIRC_WARN_UNUSED_RESULT return is a build error, not a warning.
 target_compile_options(${COMPONENT_LIB} PRIVATE -Werror=unused-result)
 
-# Vector kernels for the ESP32-P4 (src/k_quirc_pie.S)
-if(CONFIG_IDF_TARGET_ESP32P4)
+# Vector kernels for the ESP32-P4 (src/k_quirc_pie.S) and the ESP32-S3
+# (src/k_quirc_pie_s3.S)
+if(CONFIG_IDF_TARGET_ESP32P4 OR CONFIG_IDF_TARGET_ESP32S3)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE K_QUIRC_PIE)
 endif()
 
