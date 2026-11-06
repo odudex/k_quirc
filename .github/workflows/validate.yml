@@ -28,6 +28,9 @@ on:
         description: 'Random payloads per configuration'
         default: '3'
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest

@@ -325,15 +325,20 @@ int main(int argc, char **argv) {
       /* Sweep threshold offsets to see if any work */
       int sweep_hits = 0;
       char sweep_buf[128] = "";
-      int sweep_pos = 0;
+      size_t sweep_pos = 0;
       for (int s = 0; s < nsweep; s++) {
         k_quirc_result_t sr;
         k_quirc_error_t se;
         int sc, sg;
         if (try_decode(q, pixels, w, h, sweep_offsets[s], &sr, &se, &sc, &sg)) {
-          sweep_pos +=
-              snprintf(sweep_buf + sweep_pos, sizeof(sweep_buf) - sweep_pos,
-                       "%s%d", sweep_hits ? "," : "", sweep_offsets[s]);
+          size_t room = sizeof(sweep_buf) - sweep_pos;
+          int n = snprintf(sweep_buf + sweep_pos, room, "%s%d",
+                           sweep_hits ? "," : "", sweep_offsets[s]);
+          /* On truncation, pin to the terminator so later appends are no-ops */
+          if (n < 0 || (size_t)n >= room)
+            sweep_pos = sizeof(sweep_buf) - 1;
+          else
+            sweep_pos += (size_t)n;
           sweep_hits++;
         }
       }
