@@ -68,12 +68,15 @@ typedef enum {
   K_QUIRC_ERROR_INVALID_VERSION,
   K_QUIRC_ERROR_FORMAT_ECC,
   K_QUIRC_ERROR_DATA_ECC,
+  /* A segment this decoder does not read: Structured Append, FNC1, or a
+   * reserved mode indicator. */
   K_QUIRC_ERROR_UNKNOWN_DATA_TYPE,
   K_QUIRC_ERROR_DATA_OVERFLOW,
   K_QUIRC_ERROR_DATA_UNDERFLOW,
   K_QUIRC_ERROR_ALLOC_FAILED,
   /* An ECC-valid symbol whose decoded content is out of range for its
-   * declared mode (e.g. an alphanumeric value with no character mapping).
+   * declared mode (e.g. an alphanumeric value with no character mapping, or
+   * a numeric group above 999).
    * Appended last so existing numeric values are unchanged. */
   K_QUIRC_ERROR_INVALID_SYMBOL,
 } k_quirc_error_t;

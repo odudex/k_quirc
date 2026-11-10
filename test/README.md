@@ -114,7 +114,11 @@ The vectors are committed. To change the set, edit `CASES` in `inverted/gen_vect
 - **Alphanumeric bounds** — the 6-bit tail field holds 0..63 and the 11-bit pair field 0..2047, but the character table has only 45 entries. Values 45/63 and 2025/2047 are asserted to be rejected, 44 and 2024 accepted.
 - **Segment-mode mask** — `data_type` is the OR of every mode present, so `[Kanji][byte]` must report both. Callers reject Kanji by testing that field, and an assignment-per-segment left only the trailing mode visible.
 
-Everything the generator produces is well-formed by construction, so the validation matrix cannot reach either case. The test `#include`s `k_quirc_decode.c` to reach the static segment decoders, which is why that file is not also linked into the target.
+- **End of data** — a payload ends at a `0000` terminator, or without one where it fills the symbol. Structured Append, FNC1 and the reserved mode indicators are asserted to fail with `K_QUIRC_ERROR_UNKNOWN_DATA_TYPE` rather than end the data as a terminator does, which returned part of a message, or none of it, as a success.
+- **Numeric groups** — 10, 7 and 4 bits hold more than 999, 99 and 9. The values past those are asserted to be rejected instead of read modulo their digits.
+- **Longest payload** — the 3,517 digits of a numeric version 27-L symbol decode, and a count field claiming more than the buffer holds is refused.
+
+Everything the generator produces is well-formed by construction, so the validation matrix cannot reach these cases. The test `#include`s `k_quirc_decode.c` to reach the static segment decoders, which is why that file is not also linked into the target.
 
 ## Sanitizers
 

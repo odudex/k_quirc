@@ -2,9 +2,9 @@
  * Payload-decoder segment tests.
  *
  * The validation suite only ever feeds well-formed symbols that this project
- * generated itself, so it cannot reach either of the defects covered here:
- * both need a symbol that passes Reed-Solomon and *then* carries a bit pattern
- * a real encoder would never emit.
+ * generated itself, so it cannot reach the defects covered here: they need a
+ * symbol that passes Reed-Solomon and *then* carries a bit pattern the
+ * project's encoder never emits.
  *
  *   - decode_alpha() indexed a 45-entry table with raw 6-bit (0..63) and
  *     11-bit (0..2047) fields.  Values 45..63 read past the array into
@@ -15,6 +15,10 @@
  *   - decode_payload() assigned data_type per segment instead of accumulating
  *     it.  A QR code may mix modes, so [Kanji][byte] reported BYTE and slipped
  *     past callers that reject Kanji by testing that field.
+ *
+ *   - decode_payload() took every indicator it does not read for a
+ *     terminator, and decode_numeric() dropped what a group held beyond its
+ *     digits.  Both returned success with data the symbol does not say.
  *
  * Driving decode_payload() directly - rather than building images - keeps the
  * cases exact and deterministic: the bitstream under test is the one written
@@ -262,22 +266,120 @@ static void test_eci_excluded(void) {
     fail("eci then byte", "eci %u, expected 26", data.eci);
 }
 
-/* A payload that reaches the end of the data without a terminator must still
- * succeed - erroring on the unknown-mode default would break symbols whose
- * data exactly fills the capacity. */
-static void test_no_terminator(void) {
+/*
+ * How a payload ends.
+ *
+ * Data that fills its symbol has no terminator, or the first bits of one, and
+ * must still be read; otherwise 0000 ends it, with padding behind.  Every
+ * other indicator that is not a segment this decoder reads - Structured
+ * Append, FNC1, the reserved ones - used to end the data as a terminator
+ * does, so one part of a split message came back as a whole one, and a symbol
+ * opening with such a segment as an empty success.
+ */
+static void check_one_byte(const char *what, const bitbuf_t *b) {
+  struct quirc_data data;
+  const k_quirc_error_t err = decode(b, &data);
+
+  if (err != K_QUIRC_SUCCESS)
+    fail(what, "err %d (%s), expected success", err, k_quirc_strerror(err));
+  else if (data.payload_len != 1 || data.payload[0] != 'A')
+    fail(what, "payload_len %d, expected 1", data.payload_len);
+}
+
+static void check_unknown_mode(const char *what, const bitbuf_t *b) {
+  struct quirc_data data;
+  const k_quirc_error_t err = decode(b, &data);
+
+  if (err != K_QUIRC_ERROR_UNKNOWN_DATA_TYPE)
+    fail(what, "err %d (%s), expected UNKNOWN_DATA_TYPE", err,
+         k_quirc_strerror(err));
+}
+
+static void test_end_of_data(void) {
+  bitbuf_t b;
+  char what[64];
+
+  b = (bitbuf_t){{0}, 0};
+  put_byte(&b);
+  check_one_byte("byte without terminator", &b);
+
+  for (int bits = 1; bits < 4; bits++) {
+    b = (bitbuf_t){{0}, 0};
+    put_byte(&b);
+    put_bits(&b, 0, bits);
+    snprintf(what, sizeof(what), "byte, %d bits of terminator", bits);
+    check_one_byte(what, &b);
+  }
+
+  b = (bitbuf_t){{0}, 0};
+  put_byte(&b);
+  put_bits(&b, 0, 4); /* terminator */
+  put_bits(&b, 0, 4); /* to the byte boundary */
+  put_bits(&b, 0xec, 8);
+  put_bits(&b, 0x11, 8);
+  check_one_byte("byte, terminator, padding", &b);
+
+  for (unsigned mode = 1; mode < 16; mode++) {
+    if (mode == MODE_NUMERIC || mode == MODE_ALPHA || mode == MODE_BYTE ||
+        mode == MODE_KANJI || mode == MODE_ECI)
+      continue;
+
+    b = (bitbuf_t){{0}, 0};
+    put_bits(&b, mode, 4);
+    put_bits(&b, 0, 20);
+    snprintf(what, sizeof(what), "mode %u first", mode);
+    check_unknown_mode(what, &b);
+
+    b = (bitbuf_t){{0}, 0};
+    put_byte(&b);
+    put_bits(&b, mode, 4);
+    put_bits(&b, 0, 20);
+    snprintf(what, sizeof(what), "byte then mode %u", mode);
+    check_unknown_mode(what, &b);
+  }
+}
+
+/*
+ * Numeric groups hold more than their digits can say: ten bits reach 1023 for
+ * three digits, seven reach 127 for two, four reach 15 for one.  The excess
+ * used to be dropped, 1000 reading as "000".
+ */
+static void check_numeric_group(int digits, int bits, unsigned value,
+                                const char *expect) {
   bitbuf_t b = {{0}, 0};
   struct quirc_data data;
+  char what[64];
 
-  put_byte(&b);
+  snprintf(what, sizeof(what), "numeric %d-bit group %u", bits, value);
+  put_bits(&b, MODE_NUMERIC, 4);
+  put_bits(&b, (unsigned)digits, 10);
+  put_bits(&b, value, bits);
 
   const k_quirc_error_t err = decode(&b, &data);
-  if (err != K_QUIRC_SUCCESS)
-    fail("byte without terminator", "err %d (%s), expected success", err,
-         k_quirc_strerror(err));
-  else if (data.payload_len != 1 || data.payload[0] != 'A')
-    fail("byte without terminator", "payload_len %d, expected 1",
-         data.payload_len);
+  if (!expect) {
+    if (err != K_QUIRC_ERROR_INVALID_SYMBOL)
+      fail(what, "err %d (%s), expected INVALID_SYMBOL", err,
+           k_quirc_strerror(err));
+  } else if (err != K_QUIRC_SUCCESS) {
+    fail(what, "err %d (%s), expected success", err, k_quirc_strerror(err));
+  } else if (data.payload_len != digits ||
+             memcmp(data.payload, expect, (size_t)digits)) {
+    fail(what, "payload \"%s\", expected \"%s\"", (const char *)data.payload,
+         expect);
+  }
+}
+
+static void test_numeric_groups(void) {
+  check_numeric_group(3, 10, 0, "000");
+  check_numeric_group(3, 10, 999, "999");
+  check_numeric_group(3, 10, 1000, NULL);
+  check_numeric_group(3, 10, 1023, NULL);
+  check_numeric_group(2, 7, 99, "99");
+  check_numeric_group(2, 7, 100, NULL);
+  check_numeric_group(2, 7, 127, NULL);
+  check_numeric_group(1, 4, 9, "9");
+  check_numeric_group(1, 4, 10, NULL);
+  check_numeric_group(1, 4, 15, NULL);
 }
 
 /*
@@ -347,13 +449,14 @@ int main(void) {
   test_alpha_bounds();
   test_data_type_accumulates();
   test_eci_excluded();
-  test_no_terminator();
+  test_end_of_data();
+  test_numeric_groups();
   test_longest_numeric();
 
   if (failures) {
     fprintf(stderr, "decode payload: %d failure(s)\n", failures);
     return 1;
   }
-  printf("decode payload: alphanumeric bounds and segment-mode mask OK\n");
+  printf("decode payload: OK\n");
   return 0;
 }
