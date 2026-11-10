@@ -623,18 +623,27 @@ static void binarize_by_white_level(struct k_quirc *q, int t, int white,
   int16_t t_block[THRESHOLD_MAX_GRID * THRESHOLD_MAX_GRID];
   int16_t t_local[THRESHOLD_MAX_GRID * THRESHOLD_MAX_GRID];
 
+  /* A block's bins are 16 bits wide.  Derived from the image a block is 160
+   * pixels a side at most and takes under 3,000 samples, but a fixed grid of
+   * one block makes it the whole frame, and past 768 pixels a side every third
+   * pixel of an evenly lit page wraps a bin.  Such blocks are sampled more
+   * sparsely: the tails wanted are of a 64th of the samples, however many. */
+  int step = THRESHOLD_SAMPLE_STEP;
+  while (((bw + step - 1) / step) * ((bh + step - 1) / step) > UINT16_MAX)
+    step++;
+
   /* A row of blocks at a time: its histograms fit the stack and the cache */
   for (int by = 0; by < gy; by++) {
     uint16_t hist[THRESHOLD_MAX_GRID][THRESHOLD_BINS];
     int y1 = (by + 1) * bh < h ? (by + 1) * bh : h;
 
     memset(hist, 0, sizeof(hist));
-    for (int y = by * bh; y < y1; y += THRESHOLD_SAMPLE_STEP) {
+    for (int y = by * bh; y < y1; y += step) {
       const quirc_pixel_t *row = pixels + y * w;
       for (int bx = 0; bx < gx; bx++) {
         uint16_t *block = hist[bx];
         int x1 = (bx + 1) * bw < w ? (bx + 1) * bw : w;
-        for (int x = bx * bw; x < x1; x += THRESHOLD_SAMPLE_STEP)
+        for (int x = bx * bw; x < x1; x += step)
           block[row[x] >> THRESHOLD_BIN_SHIFT]++;
       }
     }

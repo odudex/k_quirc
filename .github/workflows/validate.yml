@@ -77,6 +77,9 @@ jobs:
       - name: Run alignment search bound test
         run: test/build_ci/k_quirc_alignment_search_test
 
+      - name: Run one-block threshold grid test
+        run: test/build_ci/k_quirc_threshold_grid_test
+
       - name: Run inverted code test
         run: |
           test/build_ci/k_quirc_inverted_254_test
@@ -101,6 +104,7 @@ jobs:
           test/build_asan/k_quirc_falloff_test
           test/build_asan/k_quirc_convergence_test
           test/build_asan/k_quirc_alignment_search_test
+          test/build_asan/k_quirc_threshold_grid_test
           test/build_asan/k_quirc_inverted_254_test
           test/build_asan/k_quirc_inverted_1024_test
 

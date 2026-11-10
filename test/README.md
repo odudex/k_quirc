@@ -89,6 +89,16 @@ The gap between the two levels makes Otsu's between-class variance flat across a
 
 A capture that prompted it measured white at 232 in the centre and 110 in the code's far corner. A threshold taken from the centre sits at that corner's white level, so the corner binarizes solid dark, and on an animated sequence the same parts fail every time round. Every other vector and the validation matrix are evenly lit and cannot see it.
 
+## Fixed Threshold Grid
+
+`k_quirc_threshold_grid_test` builds the white-level mesh with `K_QUIRC_THRESHOLD_GRID=1`, one block for the whole frame, and binarizes 1024x1024 frames of three flat bands: ink, a mid-gray well under the threshold, and white.
+
+```bash
+./build/k_quirc_threshold_grid_test
+```
+
+A block's histogram has 16-bit bins. A block derived from the image never comes near filling one, but a single block over a frame larger than 768 pixels a side did, on any evenly lit page. Where the count of white samples wrapped to almost nothing, the block's white level was read off the gray instead and the threshold scaled down to it. That takes a particular share of white, so the test sweeps the width of the gray band and requires it to binarize as ink at every width. The test `#include`s `k_quirc_identify.c` to reach the static mesh.
+
 ## Inverted Codes
 
 `k_quirc_inverted_254_test` and `k_quirc_inverted_1024_test` read light-on-dark codes through the `K_QUIRC_INVERTED_RETRY` pass, which the library leaves out by default and these two targets define for themselves:
