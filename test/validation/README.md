@@ -54,7 +54,7 @@ Payloads are filled with deterministic random data seeded from the test paramete
 - **Alphanumeric**: random characters from the 45-char QR alphanumeric set
 - **Byte**: random bytes across the full `0x00-0xFF` range, including nulls
 
-Payload length is capped at the decoder's buffer limit (`K_QUIRC_MAX_PAYLOAD = 2560` bytes) to avoid false "Data overflow" failures that would be test-script artifacts rather than real decode issues.
+Payload length is capped at the decoder's buffer limit (`K_QUIRC_MAX_PAYLOAD = 3520` bytes, one of them the terminating NUL) to avoid false "Data overflow" failures that would be test-script artifacts rather than real decode issues. No symbol up to version 27 reaches it: the longest payload, numeric at 27-L, is 3,517 digits.
 
 ### Validation
 

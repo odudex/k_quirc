@@ -35,9 +35,13 @@
 #define K_QUIRC_WARN_UNUSED_RESULT
 #endif
 
-/* Limits on the maximum size of QR-codes and their content (Max Version 27). */
+/* Limits on the maximum size of QR-codes and their content (Max Version 27).
+ *
+ * The payload limit is set by numeric mode, which packs three digits into ten
+ * bits: a version 27-L symbol holds 1,465 bytes but 3,517 digits. One more
+ * byte is kept for the terminating NUL. */
 #define K_QUIRC_MAX_BITMAP 1954  /* ceil(125*125/8) for version 27 */
-#define K_QUIRC_MAX_PAYLOAD 2560 /* v27 total codewords 1990 < 2560 */
+#define K_QUIRC_MAX_PAYLOAD 3520 /* 3,517 digits and a NUL, rounded up */
 
 /* QR-code ECC types. */
 #define K_QUIRC_ECC_LEVEL_M 0

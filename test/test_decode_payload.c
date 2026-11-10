@@ -69,7 +69,8 @@ static void put_bits(bitbuf_t *b, unsigned value, int count) {
 }
 
 /* Run a hand-built bitstream through the payload decoder. */
-static k_quirc_error_t decode(const bitbuf_t *b, struct quirc_data *data) {
+static k_quirc_error_t decode_as(const bitbuf_t *b, struct quirc_data *data,
+                                 int version) {
   static struct datastream ds;
 
   memset(&ds, 0, sizeof(ds));
@@ -77,9 +78,13 @@ static k_quirc_error_t decode(const bitbuf_t *b, struct quirc_data *data) {
   ds.data_bits = b->len;
 
   memset(data, 0, sizeof(*data));
-  data->version = TEST_VERSION;
+  data->version = version;
 
   return decode_payload(data, &ds);
+}
+
+static k_quirc_error_t decode(const bitbuf_t *b, struct quirc_data *data) {
+  return decode_as(b, data, TEST_VERSION);
 }
 
 /*
@@ -275,11 +280,75 @@ static void test_no_terminator(void) {
          data.payload_len);
 }
 
+/*
+ * The longest payload a supported symbol carries is numeric: three digits to
+ * ten bits make 3,517 of them at version 27-L, against 1,465 bytes.  The
+ * payload buffer was sized by the bytes, so any numeric symbol past 2,559
+ * digits - valid, and well within the versions supported - was refused as an
+ * overflow.
+ */
+#define LONGEST_VERSION 27
+#define LONGEST_DATA_BITS (1468 * 8) /* version 27-L data codewords */
+#define LONGEST_NUMERIC 3517
+
+static void put_numeric_run(bitbuf_t *b, int digits) {
+  put_bits(b, MODE_NUMERIC, 4);
+  put_bits(b, (unsigned)digits, 14); /* count field from version 27 up */
+  for (int i = 0; i + 3 <= digits; i += 3)
+    put_bits(b, (unsigned)((i % 10) * 100 + ((i + 1) % 10) * 10 + (i + 2) % 10),
+             10);
+  if (digits % 3 == 2)
+    put_bits(b, (unsigned)(((digits - 2) % 10) * 10 + (digits - 1) % 10), 7);
+  else if (digits % 3 == 1)
+    put_bits(b, (unsigned)((digits - 1) % 10), 4);
+}
+
+static void test_longest_numeric(void) {
+  static bitbuf_t b;
+  static struct quirc_data data;
+
+  memset(&b, 0, sizeof(b));
+  put_numeric_run(&b, LONGEST_NUMERIC);
+  if (b.len > LONGEST_DATA_BITS) {
+    fail("longest numeric", "test stream of %d bits exceeds the symbol", b.len);
+    return;
+  }
+
+  k_quirc_error_t err = decode_as(&b, &data, LONGEST_VERSION);
+  if (err != K_QUIRC_SUCCESS) {
+    fail("longest numeric", "err %d (%s), expected success", err,
+         k_quirc_strerror(err));
+  } else if (data.payload_len != LONGEST_NUMERIC) {
+    fail("longest numeric", "payload_len %d, expected %d", data.payload_len,
+         LONGEST_NUMERIC);
+  } else {
+    for (int i = 0; i < LONGEST_NUMERIC; i++) {
+      if (data.payload[i] != '0' + i % 10) {
+        fail("longest numeric", "digit %d is 0x%02x", i, data.payload[i]);
+        break;
+      }
+    }
+    if (data.payload[LONGEST_NUMERIC] != 0)
+      fail("longest numeric", "payload is not NUL-terminated");
+  }
+
+  /* A count field can still claim more than the buffer holds, and that is
+   * still refused before a digit is written */
+  memset(&b, 0, sizeof(b));
+  put_bits(&b, MODE_NUMERIC, 4);
+  put_bits(&b, K_QUIRC_MAX_PAYLOAD, 14);
+  err = decode_as(&b, &data, LONGEST_VERSION);
+  if (err != K_QUIRC_ERROR_DATA_OVERFLOW)
+    fail("numeric count past the buffer", "err %d (%s), expected overflow", err,
+         k_quirc_strerror(err));
+}
+
 int main(void) {
   test_alpha_bounds();
   test_data_type_accumulates();
   test_eci_excluded();
   test_no_terminator();
+  test_longest_numeric();
 
   if (failures) {
     fprintf(stderr, "decode payload: %d failure(s)\n", failures);

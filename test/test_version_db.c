@@ -77,9 +77,10 @@ int main(void) {
     if ((grid * grid + 7) / 8 > K_QUIRC_MAX_BITMAP)
       fail(v, "-", "bitmap %d exceeds K_QUIRC_MAX_BITMAP %d",
            (grid * grid + 7) / 8, K_QUIRC_MAX_BITMAP);
-    if (info->data_bytes > K_QUIRC_MAX_PAYLOAD)
-      fail(v, "-", "data_bytes %d exceeds K_QUIRC_MAX_PAYLOAD %d",
-           info->data_bytes, K_QUIRC_MAX_PAYLOAD);
+    /* One byte to spare: up to seven remainder bits follow the codewords */
+    if (info->data_bytes >= QUIRC_MAX_CODEWORDS)
+      fail(v, "-", "data_bytes %d does not fit QUIRC_MAX_CODEWORDS %d",
+           info->data_bytes, QUIRC_MAX_CODEWORDS);
 
     /* Alignment pattern centres: start at 6, strictly increasing, terminated
      * inside the array, and inside the symbol. */
