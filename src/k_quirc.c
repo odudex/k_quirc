@@ -264,8 +264,13 @@ k_quirc_error_t k_quirc_decode(k_quirc_t *q, int index,
 
   /* The payload now lives in the caller's result, which it is responsible for
    * clearing. Drop our copies rather than leaving them resident in the context
-   * for the remainder of the scan session. quirc_decode_internal() zeroes both
-   * on entry, so this only shortens the window - it changes no behaviour. */
+   * for the remainder of the scan session: the decoded payload, the codewords
+   * it was decoded from, and the sampled modules those were read from, which
+   * are the same secret before error correction. All three are rebuilt from
+   * the frame on the next call, so this only shortens the window - it changes
+   * no behaviour. The frame itself stays until k_quirc_begin() hands it out
+   * to be overwritten, as the other codes in it may yet be asked for. */
+  k_quirc_bzero(code, sizeof(*code));
   k_quirc_bzero(data, sizeof(*data));
   k_quirc_bzero(ds, sizeof(*ds));
 

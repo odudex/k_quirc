@@ -158,6 +158,11 @@ static void decode_frame(k_quirc_t *q, const uint8_t *src, int sw, int sh,
   CHECK(k_quirc_count(q) == 1);
   CHECK(k_quirc_decode(q, 0, result) == K_QUIRC_SUCCESS);
   CHECK(result->valid && result->data.payload_len > 0);
+  /* The payload is the caller's now.  No copy of it stays in the context: not
+   * decoded, not as codewords, not as the modules they were sampled into. */
+  check_zero(&q->code_scratch, sizeof(q->code_scratch));
+  check_zero(&q->data_scratch, sizeof(q->data_scratch));
+  check_zero(&q->ds_scratch, sizeof(q->ds_scratch));
 }
 
 static void test_decode_transitions(void) {
