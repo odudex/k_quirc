@@ -183,9 +183,40 @@ static void test_decode_transitions(void) {
   stbi_image_free(src);
 }
 
+/* A grid belongs to the frame it was fitted in.  Resizing used to leave the
+ * count standing, so decoding next sampled the old grid out of a frame of
+ * another shape - or, where the buffer had grown, out of memory nothing had
+ * written yet. */
+static void test_resize_discards_detections(void) {
+  int sw, sh, channels;
+  uint8_t *src = stbi_load(RESIZE_VECTOR, &sw, &sh, &channels, 1);
+  CHECK(src && sw <= 600 && sh <= 600);
+  k_quirc_t *q = k_quirc_new();
+  CHECK(q);
+  /* Smaller, another shape of the same area or less, and past capacity */
+  const int sizes[][2] = {{sw, sh}, {600, 300}, {640, 640}, {64, 64}};
+  for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+    k_quirc_result_t result;
+    decode_frame(q, src, sw, sh, 600, 600, &result);
+
+    /* Its own size is no resize at all, and the frame stays readable */
+    CHECK(k_quirc_resize(q, 600, 600) == 0);
+    CHECK(k_quirc_count(q) == 1);
+    CHECK(k_quirc_decode(q, 0, &result) == K_QUIRC_SUCCESS);
+
+    CHECK(k_quirc_resize(q, sizes[i][0], sizes[i][1]) == 0);
+    CHECK(k_quirc_count(q) == 0);
+    CHECK(k_quirc_decode(q, 0, &result) != K_QUIRC_SUCCESS);
+    CHECK(!result.valid);
+  }
+  k_quirc_destroy(q);
+  stbi_image_free(src);
+}
+
 int main(void) {
   test_capacity();
   test_decode_transitions();
+  test_resize_discards_detections();
   for (size_t i = 0; i < 8; i++)
     CHECK(!allocations[i].ptr);
   puts("Capacity reuse, secure clearing and decode transitions passed");

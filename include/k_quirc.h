@@ -126,7 +126,10 @@ void k_quirc_destroy(k_quirc_t *q);
  * Retains the largest allocated image capacity until destruction. Resizing
  * within that capacity does not allocate; the next frame must fill the active
  * width * height bytes returned by k_quirc_begin(). Image contents are not
- * preserved when capacity grows. On failure the existing context is unchanged.
+ * preserved when capacity grows. Changing the size discards the codes found in
+ * the last frame: k_quirc_count() is 0 until the next k_quirc_end(). Resizing
+ * to the current size does nothing. On failure the existing context is
+ * unchanged.
  * @param q Decoder instance
  * @param w Image width
  * @param h Image height

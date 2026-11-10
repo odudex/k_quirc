@@ -76,6 +76,15 @@ void k_quirc_destroy(k_quirc_t *q) {
   }
 }
 
+/* What the last frame found is of no use once its pixels are being replaced or
+ * the frame has another shape: a grid kept past either would be sampled out
+ * of an image it was not fitted to. */
+static void discard_detections(k_quirc_t *q) {
+  q->num_regions = QUIRC_PIXEL_REGION;
+  q->num_capstones = 0;
+  q->num_grids = 0;
+}
+
 int k_quirc_resize(k_quirc_t *q, int w, int h) {
   size_t image_size;
   uint8_t *new_image;
@@ -84,6 +93,9 @@ int k_quirc_resize(k_quirc_t *q, int w, int h) {
 
   if (!q || image_allocation_size(w, h, sizeof(uint8_t), &image_size) < 0)
     return -1;
+
+  if (w == q->w && h == q->h && q->image)
+    return 0;
 
   if (image_size <= q->image_capacity) {
     size_t old_size = (size_t)q->w * (size_t)q->h;
@@ -97,6 +109,7 @@ int k_quirc_resize(k_quirc_t *q, int w, int h) {
     }
     q->w = w;
     q->h = h;
+    discard_detections(q);
     return 0;
   }
 
@@ -150,6 +163,7 @@ int k_quirc_resize(k_quirc_t *q, int w, int h) {
     q->flood_fill_stack = new_stack;
   q->w = w;
   q->h = h;
+  discard_detections(q);
 
   return 0;
 }
@@ -163,9 +177,7 @@ uint8_t *k_quirc_begin(k_quirc_t *q, int *w, int *h) {
     return NULL;
   }
 
-  q->num_regions = QUIRC_PIXEL_REGION;
-  q->num_capstones = 0;
-  q->num_grids = 0;
+  discard_detections(q);
 
   if (w)
     *w = q->w;
