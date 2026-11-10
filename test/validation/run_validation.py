@@ -198,7 +198,7 @@ PAYLOAD_DISPLAY_LEN = 40
 
 # k_quirc decoder buffer limit (K_QUIRC_MAX_PAYLOAD in k_quirc.h)
 # Payloads exceeding this cause "Data overflow" errors in the decoder.
-K_QUIRC_MAX_PAYLOAD = 2560
+K_QUIRC_MAX_PAYLOAD = 3520
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ def make_payload(version, ecc, mode, render_key, frame, iteration):
 
     # Cap at decoder buffer size to avoid "Data overflow" errors that are
     # test-script artifacts rather than real decode failures.
-    max_len = min(capacity, K_QUIRC_MAX_PAYLOAD)
+    max_len = min(capacity, K_QUIRC_MAX_PAYLOAD - 1)   # room for the NUL
     min_len = max(1, max_len // 10)
     payload_len = rng.randint(min_len, max_len)
 

@@ -116,6 +116,10 @@ static inline void *k_malloc_fast(size_t size) {
 #define QUIRC_PERSPECTIVE_PARAMS 8
 #define QUIRC_MAX_VERSION 27
 #define QUIRC_MAX_ALIGNMENT 7
+/* Room for a symbol's codewords, data and error correction together: 1,828
+ * at version 27, and the few remainder bits read after them.  The payload
+ * decoded out of them can be longer; see K_QUIRC_MAX_PAYLOAD. */
+#define QUIRC_MAX_CODEWORDS 2560
 /* Flood-fill span stack: entries are 8 bytes each (see xylf_t), so the
  * default costs 64 KB of fast RAM.  Override to trade memory for the
  * ability to fill extremely fragmented regions without overflow. */
@@ -229,10 +233,10 @@ struct quirc_data {
 };
 
 struct datastream {
-  uint8_t raw[K_QUIRC_MAX_PAYLOAD];
+  uint8_t raw[QUIRC_MAX_CODEWORDS];
   int data_bits;
   int ptr;
-  uint8_t data[K_QUIRC_MAX_PAYLOAD];
+  uint8_t data[QUIRC_MAX_CODEWORDS];
 };
 
 struct k_quirc {
