@@ -298,7 +298,21 @@ extern const struct quirc_version_info quirc_version_db[QUIRC_MAX_VERSION + 1];
 /*
  * Helper functions
  */
-ALWAYS_INLINE int fast_roundf(float x) { return (int)(x + 0.5f); }
+
+/* How far from the origin a mapped point is followed.  A degenerate fit sends
+ * points to infinity or nowhere, which no int holds and converting is
+ * undefined, so beyond eight frames either way they are held at the limit.
+ * That also keeps the product of two coordinate differences inside an int. */
+#define QUIRC_COORD_LIMIT (8 * K_QUIRC_MAX_IMAGE_DIM)
+
+/* Round to the nearest pixel; NaN goes to the lower limit. */
+ALWAYS_INLINE int round_coord(float x) {
+  if (!(x > -(float)QUIRC_COORD_LIMIT))
+    return -QUIRC_COORD_LIMIT;
+  if (x > (float)QUIRC_COORD_LIMIT)
+    return QUIRC_COORD_LIMIT;
+  return (int)(x + 0.5f);
+}
 
 ALWAYS_INLINE void perspective_map(const float *c, float u, float v,
                                    struct quirc_point *ret) {
@@ -307,8 +321,8 @@ ALWAYS_INLINE void perspective_map(const float *c, float u, float v,
   float x = (c[0] * u + c[1] * v + c[2]) * inv_den;
   float y = (c[3] * u + c[4] * v + c[5]) * inv_den;
 
-  ret->x = fast_roundf(x);
-  ret->y = fast_roundf(y);
+  ret->x = round_coord(x);
+  ret->y = round_coord(y);
 }
 
 /*

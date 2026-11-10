@@ -13,11 +13,14 @@ set(SAMPLES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/pgm_samples)
 # Ignoring a K_QUIRC_WARN_UNUSED_RESULT return is a build error, not a warning.
 add_compile_options(-Werror=unused-result)
 
+# float-cast-overflow is named on its own: GCC leaves it out of "undefined",
+# and it is the check that catches a degenerate perspective fit being
+# converted to pixel coordinates.
 option(K_QUIRC_SANITIZE "Build the test binaries with ASan and UBSan" OFF)
 if(K_QUIRC_SANITIZE)
-    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer
-                        -fno-sanitize-recover=all -g)
-    add_link_options(-fsanitize=address,undefined)
+    add_compile_options(-fsanitize=address,undefined,float-cast-overflow
+                        -fno-omit-frame-pointer -fno-sanitize-recover=all -g)
+    add_link_options(-fsanitize=address,undefined,float-cast-overflow)
 endif()
 
 add_executable(k_quirc_test

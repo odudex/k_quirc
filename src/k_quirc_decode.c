@@ -887,11 +887,11 @@ void quirc_extract_nudged(const struct k_quirc *q, int index,
     float inv = 1.0f / den;
 
     for (int x = 0; x < qr->grid_size; x++) {
-      int px, py;
+      float fx, fy; /* the pixel, once truncated */
       if (!nudged) {
         inv *= 2.0f - den * inv;
-        px = (int)(mx * inv);
-        py = (int)(my * inv);
+        fx = mx * inv;
+        fy = my * inv;
         mx += mx_step;
         my += my_step;
         den += c[6];
@@ -903,11 +903,18 @@ void quirc_extract_nudged(const struct k_quirc *q, int index,
         float un = ux + du * wgt;
         float vn = vy + dv * wgt;
         float d = 1.0f / (c[6] * un + c[7] * vn + 1.0f);
-        px = fast_roundf((c[0] * un + c[1] * vn + c[2]) * d);
-        py = fast_roundf((c[3] * un + c[4] * vn + c[5]) * d);
+        fx = (c[0] * un + c[1] * vn + c[2]) * d + 0.5f;
+        fy = (c[3] * un + c[4] * vn + c[5]) * d + 0.5f;
       }
 
-      if (py >= 0 && py < h && px >= 0 && px < w) {
+      /* Bounds are tested before the conversion, not after it.  Where the
+       * fit's denominator crosses zero inside the grid the reciprocal runs
+       * away, and converting an infinity, a NaN or anything else an int
+       * cannot hold is undefined; all of those fail here, as a cell off the
+       * image does.  Truncation takes (-1, 0) to pixel 0, hence the -1. */
+      if (fx > -1.0f && fx < (float)w && fy > -1.0f && fy < (float)h) {
+        int px = (int)fx;
+        int py = (int)fy;
         if (q->pixels[py * w + px])
           code->cell_bitmap[i >> 3] |= (1 << (i & 7));
       }
