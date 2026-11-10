@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "k_quirc.h"
 #include "k_quirc_internal.h"
@@ -25,6 +26,62 @@ static void check_ptr_nonnull(const char *name, const void *ptr) {
     return;
   fprintf(stderr, "%s: got null pointer\n", name);
   failures++;
+}
+
+/* A fit whose denominator crosses zero inside the grid, or reaches it at a
+ * corner, maps cells to infinity.  Sampling such a grid must read nothing
+ * outside the image and report corners an int can hold; the conversions used
+ * to be made first and checked after, which is undefined for what a
+ * degenerate fit produces and only showed under -fsanitize=float-cast-overflow.
+ */
+static void test_degenerate_fit(void) {
+  static const float fits[][QUIRC_PERSPECTIVE_PARAMS] = {
+      {1, 0, 0, 0, 1, 0, -0.1f, 0},      /* zero at u = 10 */
+      {1, 0, 0, 0, 1, 0, 0, -0.1f},      /* zero at v = 10 */
+      {1, 0, 0, 0, 1, 0, -1.0f / 21, 0}, /* zero at the corner u = 21 */
+      {1e30f, 0, 0, 0, 1e30f, 0, 0, 0},  /* finite, and off any image */
+      {1, 0, 0, 0, 1, 0, -1.0f / 42, -1.0f / 42},
+  };
+  static k_quirc_result_t result;
+  k_quirc_t *q = k_quirc_new();
+
+  if (!q || k_quirc_resize(q, 64, 64) < 0) {
+    fprintf(stderr, "degenerate fit: cannot set up a decoder\n");
+    failures++;
+    k_quirc_destroy(q);
+    return;
+  }
+
+  for (size_t i = 0; i < sizeof(fits) / sizeof(fits[0]); i++) {
+    uint8_t *image = k_quirc_begin(q, NULL, NULL);
+    if (!image) {
+      failures++;
+      break;
+    }
+    memset(image, 0, 64 * 64);
+
+    /* As identification would leave it, had it fitted this */
+    q->num_grids = 1;
+    q->grids[0].grid_size = 21;
+    memcpy(q->grids[0].c, fits[i], sizeof(fits[i]));
+
+    k_quirc_error_t err = k_quirc_decode(q, 0, &result);
+    if (err == K_QUIRC_SUCCESS || result.valid) {
+      fprintf(stderr, "degenerate fit %zu: decoded\n", i);
+      failures++;
+    }
+    for (int corner = 0; corner < 4; corner++) {
+      int x = result.corners[corner].x;
+      int y = result.corners[corner].y;
+      if (x < -QUIRC_COORD_LIMIT || x > QUIRC_COORD_LIMIT ||
+          y < -QUIRC_COORD_LIMIT || y > QUIRC_COORD_LIMIT) {
+        fprintf(stderr, "degenerate fit %zu: corner %d at (%d, %d)\n", i,
+                corner, x, y);
+        failures++;
+      }
+    }
+  }
+  k_quirc_destroy(q);
 }
 
 int main(void) {
@@ -89,6 +146,8 @@ int main(void) {
   k_quirc_destroy(q1);
   k_quirc_destroy(q2);
   k_quirc_set_threshold_offset(K_QUIRC_THRESHOLD_OFFSET_DEFAULT);
+
+  test_degenerate_fit();
 
   return failures ? 1 : 0;
 }
