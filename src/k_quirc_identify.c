@@ -804,8 +804,11 @@ static int region_code(struct k_quirc *q, int x, int y) {
 
   pixel = q->pixels[y * q->w + x];
 
+  /* A fill that ran out of stack leaves its pixels labelled and its area at
+   * 0.  That is no region when the fill gives up, below, and none when the
+   * label is met again: whatever bounds an area would otherwise pass it. */
   if (pixel >= QUIRC_PIXEL_REGION)
-    return pixel;
+    return q->regions[pixel].count ? pixel : -1;
 
   if (pixel == QUIRC_PIXEL_WHITE)
     return -1;
