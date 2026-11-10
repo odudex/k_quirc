@@ -37,6 +37,11 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_BILINEAR_THRESHOLD)
 # default, and without it that argument is ignored.
 # target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_INVERTED_RETRY)
 
+# PROTOTYPE: how grid fitting gets a cell's reciprocal. 1 (the default) takes a
+# Newton step from the cell before, 2 takes two, 0 divides per cell as before.
+# Uncomment and set to compare timings on the target.
+# target_compile_definitions(${COMPONENT_LIB} PRIVATE K_QUIRC_FITNESS_NEWTON=0)
+
 # Uncomment to enable QR debug visualization mode
 # This shows the thresholded pixel buffer with timing pattern overlays
 # target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_DEBUG)

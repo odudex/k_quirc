@@ -1374,10 +1374,20 @@ static bool sample_steps_at(const float *c, float u, float v,
   return true;
 }
 
-/* The perspective map at a cell centre, as numerators and denominator */
+/* PROTOTYPE, for measuring on the target: how a cell gets the reciprocal of
+ * its denominator.  0 divides, as before.  1 and 2 take that many Newton
+ * steps from the reciprocal of the cell before, which the cursor carries from
+ * line to line, so a pattern costs one division rather than one a cell. */
+#ifndef K_QUIRC_FITNESS_NEWTON
+#define K_QUIRC_FITNESS_NEWTON 1
+#endif
+
+/* The perspective map at a cell centre, as numerators and denominator, and
+ * 65536 over the denominator of the cell last scored */
 struct cell_cursor {
   const float *c;
   float nx, ny, den;
+  float inv;
 };
 
 static void cursor_set(struct cell_cursor *k, const float *c, int x, int y) {
@@ -1387,6 +1397,11 @@ static void cursor_set(struct cell_cursor *k, const float *c, int x, int y) {
   k->nx = c[0] * u + c[1] * v + c[2];
   k->ny = c[3] * u + c[4] * v + c[5];
   k->den = c[6] * u + c[7] * v + 1.0f;
+#if K_QUIRC_FITNESS_NEWTON
+  k->inv = 65536.0f / k->den;
+#else
+  k->inv = 0.0f;
+#endif
 }
 
 enum { DIR_U, DIR_V, DIR_BACK_U, DIR_BACK_V };
@@ -1413,10 +1428,23 @@ static int fitness_line(const struct k_quirc *q, const struct sample_steps *s,
   const float ny_step = back ? -c[3] : c[3];
   const float den_step = back ? -c[6] : c[6];
   float nx = k->nx, ny = k->ny, den = k->den;
+  float inv = k->inv;
   int score = 0;
 
   for (int i = 0; i < n; i++) {
-    float inv = 65536.0f / den;
+#if K_QUIRC_FITNESS_NEWTON == 0
+    inv = 65536.0f / den;
+#else
+    /* r' = r (2 - d r) squares the error of r as a reciprocal of d.  Coming
+     * from the cell before, that error is the fraction the denominator moved
+     * by, a percent at the steepest tilt a code is read at.  The 2^-16 is
+     * exact, and keeps the 65536 in the reciprocal. */
+    const float d = den * (1.0f / 65536.0f);
+    inv *= 2.0f - d * inv;
+#if K_QUIRC_FITNESS_NEWTON >= 2
+    inv *= 2.0f - d * inv;
+#endif
+#endif
     float px = nx * inv;
     float py = ny * inv;
 
@@ -1459,6 +1487,7 @@ static int fitness_line(const struct k_quirc *q, const struct sample_steps *s,
   k->nx = nx;
   k->ny = ny;
   k->den = den;
+  k->inv = inv;
   return score;
 }
 
