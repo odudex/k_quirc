@@ -5,6 +5,11 @@
  * frame, estimate at (8678, 250901)).  Whatever it is handed, the search must
  * stay inside the image and leave a hopeless estimate alone; handed a pattern
  * a few modules from the estimate, among look-alike modules, it must find it.
+ *
+ * It must also not anchor the grid on a region whose flood fill ran out of
+ * stack.  Such a region keeps its label and an area of 0, which passed for
+ * "no larger than a module" and moved the anchor to the centroid of whatever
+ * the fill had reached.
  */
 #include <stdio.h>
 #include <string.h>
@@ -89,8 +94,9 @@ static void check_left_alone(const char *name, int align_x, int align_y,
 
 /* A pattern centred on module (82, 82), lone dark modules all around it, and
  * an estimate `off` modules out: the first region of a module's size a search
- * outwards from there meets is one of the look-alikes. */
-static void check_found(int off_x, int off_y) {
+ * outwards from there meets is one of the look-alikes.  With `unfilled`, the
+ * centre module is as a fill that ran out of stack leaves it. */
+static void check_found(int off_x, int off_y, bool unfilled) {
   k_quirc_t *q = new_decoder();
   if (!q)
     return;
@@ -111,6 +117,15 @@ static void check_found(int off_x, int off_y) {
         fill_module(q, mx, my, QUIRC_PIXEL_BLACK);
     }
 
+  if (unfilled) {
+    struct quirc_region *reg = &q->regions[q->num_regions];
+    memset(reg, 0, sizeof(*reg));
+    reg->capstone = -1;
+    reg->x1 = SIZE - 1;
+    reg->y1 = SIZE - 1;
+    fill_module(q, 82, 82, (quirc_pixel_t)q->num_regions++);
+  }
+
   int centre = 30 + 82 * PITCH + PITCH / 2;
   grid->align.x = centre + off_x * PITCH;
   grid->align.y = centre + off_y * PITCH;
@@ -122,13 +137,20 @@ static void check_found(int off_x, int off_y) {
     found_x = q->regions[grid->align_region].seed.x;
     found_y = q->regions[grid->align_region].seed.y;
   }
+  const char *kind = unfilled ? ", centre unfilled" : "";
   if (abs(found_x - centre) > PITCH / 2 || abs(found_y - centre) > PITCH / 2) {
-    printf("FAIL pattern %+d,%+d modules from the estimate: (%d,%d), not "
+    printf("FAIL pattern %+d,%+d modules from the estimate%s: (%d,%d), not "
            "(%d,%d)\n",
-           off_x, off_y, found_x, found_y, centre, centre);
+           off_x, off_y, kind, found_x, found_y, centre, centre);
+    failures++;
+  } else if (unfilled && grid->align_region != -1) {
+    printf("FAIL pattern %+d,%+d modules from the estimate%s: anchored on "
+           "region %d\n",
+           off_x, off_y, kind, grid->align_region);
     failures++;
   } else {
-    printf("ok   pattern %+d,%+d modules from the estimate\n", off_x, off_y);
+    printf("ok   pattern %+d,%+d modules from the estimate%s\n", off_x, off_y,
+           kind);
   }
   k_quirc_destroy(q);
 }
@@ -144,10 +166,12 @@ int main(void) {
   check_left_alone("nothing resembling the pattern in reach", 300, 300,
                    7 * PITCH, 7 * PITCH);
 
-  check_found(0, 0);
-  check_found(3, -2);
-  check_found(-3, 3);
-  check_found(-4, -4);
+  check_found(0, 0, false);
+  check_found(3, -2, false);
+  check_found(-3, 3, false);
+  check_found(-4, -4, false);
+  check_found(0, 0, true);
+  check_found(3, -2, true);
 
   if (failures) {
     printf("%d alignment search test(s) failed\n", failures);
