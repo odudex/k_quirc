@@ -32,7 +32,9 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_ADAPTIVE_THRESHOLD)
 # Comment out to disable (uses single global threshold instead)
 target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_BILINEAR_THRESHOLD)
 
-# Uncomment to enable the inverted-colors retry pass when no QR is found.
+# Uncomment to read inverted (light-on-dark) codes: a frame showing no code is
+# searched again as its negative when the caller passes find_inverted. Off by
+# default, and without it that argument is ignored.
 # target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_INVERTED_RETRY)
 
 # Uncomment to enable QR debug visualization mode

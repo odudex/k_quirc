@@ -139,9 +139,14 @@ K_QUIRC_WARN_UNUSED_RESULT uint8_t *k_quirc_begin(k_quirc_t *q, int *w, int *h);
 
 /**
  * End decoding - process the image and detect QR codes.
+ *
+ * Inverted (light on dark) codes are only read by a library built with
+ * K_QUIRC_INVERTED_RETRY, which is off by default; without it find_inverted
+ * is ignored. With it, a frame showing no dark-on-light code is searched once
+ * more as its negative, so a frame yields codes of one polarity or the other.
  * @param q Decoder instance
- * @param find_inverted If true, also try to find inverted (white on black) QR
- * codes
+ * @param find_inverted If true, and the library was built with
+ * K_QUIRC_INVERTED_RETRY, also look for inverted codes
  */
 void k_quirc_end(k_quirc_t *q, bool find_inverted);
 
@@ -178,7 +183,8 @@ K_QUIRC_WARN_UNUSED_RESULT const char *k_quirc_strerror(k_quirc_error_t err);
  * @param height Image height
  * @param results Array to store results (caller allocated)
  * @param max_results Maximum number of results to return
- * @param find_inverted If true, also try inverted QR codes
+ * @param find_inverted If true, also try inverted QR codes; ignored unless
+ * the library was built with K_QUIRC_INVERTED_RETRY (see k_quirc_end())
  * @return Number of QR codes successfully decoded
  */
 K_QUIRC_WARN_UNUSED_RESULT int

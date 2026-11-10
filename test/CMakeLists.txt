@@ -186,6 +186,32 @@ foreach(regions IN ITEMS 254 1024)
     add_test(NAME ${target} COMMAND ${target})
 endforeach()
 
+# Light-on-dark codes, read by the K_QUIRC_INVERTED_RETRY pass.  Built for both
+# label widths: the pass has to work off a buffer the labels share with the
+# image, and off one they do not.
+foreach(regions IN ITEMS 254 1024)
+    set(target k_quirc_inverted_${regions}_test)
+    add_executable(${target}
+        test_inverted.c
+        ${K_QUIRC_SRC_DIR}/k_quirc.c
+        ${K_QUIRC_SRC_DIR}/k_quirc_version.c
+        ${K_QUIRC_SRC_DIR}/k_quirc_identify.c
+        ${K_QUIRC_SRC_DIR}/k_quirc_decode.c
+    )
+    target_include_directories(${target} PRIVATE ${K_QUIRC_INC_DIR} ${K_QUIRC_SRC_DIR})
+    target_compile_definitions(${target} PRIVATE
+        QUIRC_MAX_REGIONS=${regions}
+        K_QUIRC_ADAPTIVE_THRESHOLD
+        K_QUIRC_BILINEAR_THRESHOLD
+        K_QUIRC_INVERTED_RETRY
+        INVERTED_VECTORS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/inverted/vectors"
+        NORMAL_VECTOR="${CMAKE_CURRENT_SOURCE_DIR}/convergence/vectors/cv_v06_ppm08_sig000_ev00_ink00_gr00_tilt00.png"
+    )
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wno-unused-function -O2)
+    target_link_libraries(${target} m)
+    add_test(NAME ${target} COMMAND ${target})
+endforeach()
+
 # test_alignment_search.c includes k_quirc_identify.c to reach the static search.
 add_executable(k_quirc_alignment_search_test
     test_alignment_search.c
