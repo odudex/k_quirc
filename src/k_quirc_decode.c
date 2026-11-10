@@ -538,14 +538,13 @@ static int take_bits(struct datastream *ds, int len) {
 /*
  * Payload decoding
  */
-static K_QUIRC_WARN_UNUSED_RESULT int numeric_tuple(struct quirc_data *data,
-                                                    struct datastream *ds,
-                                                    int bits, int digits) {
+static K_QUIRC_WARN_UNUSED_RESULT k_quirc_error_t numeric_tuple(
+    struct quirc_data *data, struct datastream *ds, int bits, int digits) {
   int tuple;
   int i;
 
   if (bits_remaining(ds) < bits)
-    return -1;
+    return K_QUIRC_ERROR_DATA_UNDERFLOW;
 
   tuple = take_bits(ds, bits);
 
@@ -554,8 +553,14 @@ static K_QUIRC_WARN_UNUSED_RESULT int numeric_tuple(struct quirc_data *data,
     tuple /= 10;
   }
 
+  /* 10, 7 and 4 bits hold more than 999, 99 and 9.  What is left over is a
+   * digit the group has no place for, and dropping it would hand back digits
+   * the symbol does not say. */
+  if (tuple)
+    return K_QUIRC_ERROR_INVALID_SYMBOL;
+
   data->payload_len += digits;
-  return 0;
+  return K_QUIRC_SUCCESS;
 }
 
 static k_quirc_error_t decode_numeric(struct quirc_data *data,
@@ -573,21 +578,16 @@ static k_quirc_error_t decode_numeric(struct quirc_data *data,
     return K_QUIRC_ERROR_DATA_OVERFLOW;
 
   while (count >= 3) {
-    if (numeric_tuple(data, ds, 10, 3) < 0)
-      return K_QUIRC_ERROR_DATA_UNDERFLOW;
+    k_quirc_error_t err = numeric_tuple(data, ds, 10, 3);
+    if (err)
+      return err;
     count -= 3;
   }
 
-  if (count >= 2) {
-    if (numeric_tuple(data, ds, 7, 2) < 0)
-      return K_QUIRC_ERROR_DATA_UNDERFLOW;
-    count -= 2;
-  }
-
-  if (count) {
-    if (numeric_tuple(data, ds, 4, 1) < 0)
-      return K_QUIRC_ERROR_DATA_UNDERFLOW;
-  }
+  if (count >= 2)
+    return numeric_tuple(data, ds, 7, 2);
+  if (count)
+    return numeric_tuple(data, ds, 4, 1);
 
   return K_QUIRC_SUCCESS;
 }
@@ -759,12 +759,17 @@ static k_quirc_error_t decode_payload(struct quirc_data *data,
       err = decode_eci(data, ds);
       break;
 
-    default:
-      /* The 0000 terminator lands here, as do the reserved mode indicators.
-       * Treating both as end-of-data matches upstream quirc: erroring would
-       * break symbols whose data exactly fills the capacity, leaving no room
-       * for a terminator. */
+    case 0:
+      /* The terminator.  A symbol filled to within four bits of its capacity
+       * has none, or part of one, and ends by leaving the loop instead. */
       goto done;
+
+    default:
+      /* Structured Append, FNC1 and the reserved indicators.  Upstream quirc
+       * ends the data here as it does at a terminator, which hands back as a
+       * whole message one part of several, or whatever came before a segment
+       * this decoder cannot read - nothing at all, when it is the first. */
+      return K_QUIRC_ERROR_UNKNOWN_DATA_TYPE;
     }
 
     if (err)
