@@ -24,7 +24,7 @@ if(CONFIG_IDF_TARGET_ESP32P4 OR CONFIG_IDF_TARGET_ESP32S3)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE K_QUIRC_PIE)
 endif()
 
-# Adaptive threshold control loop - adjusts threshold based on timing pattern analysis
+# Adaptive threshold control loop - adjusts threshold based on finder pattern proportions
 # Comment out to disable
 target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_ADAPTIVE_THRESHOLD)
 

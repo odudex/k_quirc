@@ -12,7 +12,7 @@ cmake --build build
 
 This compiles the core k_quirc sources directly (not as an ESP component) with two optional algorithms enabled:
 
-- `K_QUIRC_ADAPTIVE_THRESHOLD` — auto-adjust binarization threshold from timing patterns
+- `K_QUIRC_ADAPTIVE_THRESHOLD` — auto-adjust binarization threshold from finder pattern proportions
 - `K_QUIRC_BILINEAR_THRESHOLD` — threshold follows the local white level, for uneven lighting
 
 ## Test Images

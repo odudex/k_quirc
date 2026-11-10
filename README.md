@@ -4,23 +4,23 @@ A standalone QR code recognition and decoding library optimized for embedded sys
 
 ## Features
 
-- QR code versions 1-25 (up to ~2,500-byte payloads)
+- QR code versions 1-27 (payloads up to 1,465 bytes, 2,132 alphanumeric characters or 3,517 digits)
 - All four ECC levels (L/M/Q/H)
 - Numeric, Alphanumeric, Byte, and Kanji data types
 - Inverted (light-on-dark) QR codes, when built with `K_QUIRC_INVERTED_RETRY` (off by default)
-- Multiple QR codes per image
+- Multiple QR codes per image (up to 8)
 - Extended Channel Interpretation (ECI) support
 
 ### Optimizations over upstream quirc
 
 - **White-level thresholding** -- Otsu's threshold of the centre, scaled by the white level measured per block and interpolated between blocks, handles uneven lighting
-- **Adaptive threshold** -- auto-adjusts offset from timing pattern analysis for improved reliability
+- **Adaptive threshold** -- a control loop steers the threshold offset from frame to frame by the finder patterns' own proportions, which show how far binarization has fattened or thinned the ink
 - **Span-based flood fill** -- line-based fill with explicit stack avoids recursion; neighbor-row scans resume where they stopped instead of rescanning from the span edge
-- **Constant-threshold binarization spans** -- the interpolated row threshold is decomposed into exact constant spans, so the per-pixel loop is branch-free and SIMD-friendly
+- **Vectorized binarization** -- the interpolated threshold is held constant over 16-pixel cells, binarized branch-free four pixels per word, or sixteen per instruction by the PIE vector units of the ESP32-P4 and ESP32-S3
 - **Word-at-a-time pixel scanning** -- finder-pattern runs and flood-fill spans are scanned 4 bytes per step
-- **Single-division grid fitness** -- the 3x3 perspective samples per cell share one reciprocal refined by Newton-Raphson, avoiding 8 of 9 FPU divisions
+- **Incremental perspective mapping** -- grid fitting walks cell centres along lines by additions, one division per cell, and takes a cell's five samples as integer steps along the map's Jacobian; extraction carries the reciprocal along a row by a Newton-Raphson step and divides once per row
 - **ESP32 memory layout** -- large buffers in SPIRAM (cache-aligned), temporary buffers in internal RAM
-- **FreeRTOS integration** -- task yields during long loops to prevent watchdog timeout
+- **FreeRTOS integration** -- the task yields between the normal and the inverted pass (`K_QUIRC_YIELD`, overridable); a pass itself runs to completion
 
 On non-ESP platforms, memory allocation falls back to standard `malloc`/`free`.
 
@@ -87,7 +87,7 @@ Feature flags are set as compile definitions in `CMakeLists.txt`:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `K_QUIRC_BILINEAR_THRESHOLD` | Enabled | Threshold follows the local white level, for uneven lighting |
-| `K_QUIRC_ADAPTIVE_THRESHOLD` | Enabled | Auto-adjust threshold offset from timing patterns |
+| `K_QUIRC_ADAPTIVE_THRESHOLD` | Enabled | Auto-adjust threshold offset from finder pattern proportions |
 | `K_QUIRC_INVERTED_RETRY` | Disabled | Read inverted (light-on-dark) codes: when a frame shows no code and the caller passed `find_inverted`, its negative is searched too |
 | `K_QUIRC_DEBUG` | Disabled | Debug visualization (thresholded buffer with grid overlays) |
 | `K_QUIRC_THRESHOLD_GRID` | `0` | Blocks per side the white level is measured over; `0` derives it from the image (one per 64 pixels), `1`-`8` fixes it for a project scanning at one resolution |
@@ -101,8 +101,11 @@ With it, a frame in which no dark-on-light code was located is searched a second
 ## Constraints
 
 - Maximum image size: 1280x1280 pixels
-- Maximum QR version: 25 (117x117 modules)
-- Flood-fill stack: 8,192 entries
+- Maximum QR version: 27 (125x125 modules)
+- Maximum payload: 3,519 bytes (`K_QUIRC_MAX_PAYLOAD` less the terminating NUL), which the longest symbol, 3,517 digits, fits
+- Up to 8 codes per frame, from up to 32 finder patterns and 252 labelled regions (`QUIRC_MAX_REGIONS`)
+- Flood-fill stack: 8,192 entries, 64 KB (`QUIRC_FLOOD_FILL_STACK`); a region too convoluted for it is skipped
+- Structured Append and FNC1 symbols are not read: decoding them returns `K_QUIRC_ERROR_UNKNOWN_DATA_TYPE`
 
 ## License
 

@@ -1,6 +1,6 @@
 /*
  * K-Quirc Version Database
- * QR-code version information for versions 1-25
+ * QR-code version information for versions 1-27
  */
 
 #include "k_quirc_internal.h"
