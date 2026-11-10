@@ -459,18 +459,17 @@ void k_quirc_binarize_pie(uint8_t *pixels, int blocks, const uint8_t *t,
  * a time.  With H the top bit of every byte, (v | H) - (t & ~H) cannot borrow
  * between bytes and leaves in each top bit whether the pixel's low seven bits
  * reach the threshold's; the two top bits settle the rest. */
-ALWAYS_INLINE void binarize_span(quirc_pixel_t *p, int len, int t,
-                                 uint8_t xor_mask) {
+ALWAYS_INLINE void binarize_span(quirc_pixel_t *p, int len, int t) {
   int i = 0;
 
   if (K_QUIRC_LE_WORD_SCAN && sizeof(quirc_pixel_t) == 1) {
     /* Pixel by pixel up to a boundary: the vector unit needs one, and an
      * unaligned word load and store costs the ESP32-P4 a third more */
     for (; i < len && ((uintptr_t)(p + i) & K_QUIRC_BINARIZE_ALIGN); i++)
-      p[i] = ((p[i] ^ xor_mask) < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
+      p[i] = (p[i] < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
 
 #ifdef K_QUIRC_PIE
-    if (!xor_mask && len - i >= 16) {
+    if (len - i >= 16) {
       uint8_t t8 = (uint8_t)t;
       k_quirc_binarize_pie(p + i, (len - i) / 16, &t8, 0);
       i += (len - i) & ~15;
@@ -478,14 +477,12 @@ ALWAYS_INLINE void binarize_span(quirc_pixel_t *p, int len, int t,
 #endif
 
     const uint32_t H = 0x80808080u;
-    const uint32_t mask = xor_mask * 0x01010101u;
     const uint32_t t_low = (uint32_t)(t & 0x7f) * 0x01010101u;
     const uint32_t t_high = (t & 0x80) ? ~(uint32_t)0 : 0;
 
     for (; i + 4 <= len; i += 4) {
       uint32_t v;
       memcpy(&v, p + i, 4);
-      v ^= mask;
       uint32_t reaches = (v | H) - t_low;
       uint32_t below = (~v & ~reaches) | (t_high & ~(v & reaches));
       v = (below & H) >> 7;
@@ -493,7 +490,7 @@ ALWAYS_INLINE void binarize_span(quirc_pixel_t *p, int len, int t,
     }
   }
   for (; i < len; i++)
-    p[i] = ((p[i] ^ xor_mask) < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
+    p[i] = (p[i] < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
 }
 
 /* Histogram of every other pixel of every other row, which places Otsu's
@@ -597,7 +594,7 @@ ALWAYS_INLINE void binarize_row(quirc_pixel_t *row, int w, const uint8_t *t) {
   int tail = head + blocks * THRESHOLD_CELL;
   const uint8_t *cell = t + (head + THRESHOLD_CELL / 2) / THRESHOLD_CELL;
 
-  binarize_span(row, head, t[0], 0);
+  binarize_span(row, head, t[0]);
 #ifdef K_QUIRC_PIE
   if (blocks && sizeof(quirc_pixel_t) == 1) {
     k_quirc_binarize_pie(row + head, blocks, cell, 1);
@@ -605,10 +602,9 @@ ALWAYS_INLINE void binarize_row(quirc_pixel_t *row, int w, const uint8_t *t) {
 #endif
   {
     for (int b = 0; b < blocks; b++)
-      binarize_span(row + head + b * THRESHOLD_CELL, THRESHOLD_CELL, cell[b],
-                    0);
+      binarize_span(row + head + b * THRESHOLD_CELL, THRESHOLD_CELL, cell[b]);
   }
-  binarize_span(row + tail, w - tail, cell[blocks], 0);
+  binarize_span(row + tail, w - tail, cell[blocks]);
 }
 
 /* Binarize against `t`, the threshold where the white level is bin `white`,
@@ -730,7 +726,7 @@ static void binarize_by_white_level(struct k_quirc *q, int t, int white,
 #endif /* K_QUIRC_BILINEAR_THRESHOLD */
 
 HOT_FUNC
-static void threshold(struct k_quirc *q, bool inverted) {
+static void threshold(struct k_quirc *q) {
   int w = q->w;
   int h = q->h;
   int margin_x = (int)(w * K_QUIRC_THRESHOLD_MARGIN);
@@ -746,19 +742,47 @@ static void threshold(struct k_quirc *q, bool inverted) {
 #endif
 
 #ifdef K_QUIRC_BILINEAR_THRESHOLD
-  /* An inverted image's light is its ink, and ink has no level to follow */
-  if (!inverted) {
-    int white = histogram_tail(histogram, 256, sampled_pixels, true);
-    binarize_by_white_level(q, t, white >> THRESHOLD_BIN_SHIFT, offset);
-    return;
-  }
+  int white = histogram_tail(histogram, 256, sampled_pixels, true);
+  binarize_by_white_level(q, t, white >> THRESHOLD_BIN_SHIFT, offset);
+#else
+  binarize_span(q->pixels, w * h, clamp_threshold(t + offset));
 #endif
-
-  /* XOR mask unifies inverted/non-inverted into a single comparison.
-   * Normal: pixel < threshold = black. Inverted: (pixel^0xFF) < threshold. */
-  binarize_span(q->pixels, w * h, clamp_threshold(t + offset),
-                inverted ? 0xFF : 0x00);
 }
+
+#ifdef K_QUIRC_INVERTED_RETRY
+/*
+ * Turn the binarized frame into its negative: light becomes ink, and ink of
+ * whatever region label becomes light.
+ *
+ * A light-on-dark code is read off the binarization already made rather than
+ * off the grey levels again, for two reasons.  The grey levels are gone: the
+ * labels share the image's buffer unless they are 16 bits wide, so by now it
+ * holds this very binarization.  And nothing would be gained from them: where
+ * a blurred edge crosses the threshold does not depend on which side is called
+ * ink, so the boundary that suits one polarity suits the other.
+ */
+static void invert_binarized(struct k_quirc *q) {
+  quirc_pixel_t *p = q->pixels;
+  size_t n = (size_t)q->w * (size_t)q->h;
+  size_t i = 0;
+
+  if (sizeof(quirc_pixel_t) == 1) {
+    /* Four pixels at a time: the top bit of a byte of `nonzero` is set where
+     * the pixel is, exactly - no carry leaves a byte */
+    const uint32_t L = 0x7f7f7f7fu;
+
+    for (; i + 4 <= n; i += 4) {
+      uint32_t v;
+      memcpy(&v, p + i, 4);
+      uint32_t nonzero = ((v & L) + L) | v;
+      v = (~nonzero & ~L) >> 7;
+      memcpy(p + i, &v, 4);
+    }
+  }
+  for (; i < n; i++)
+    p[i] = p[i] ? QUIRC_PIXEL_WHITE : QUIRC_PIXEL_BLACK;
+}
+#endif
 
 HOT_FUNC
 static int region_code(struct k_quirc *q, int x, int y) {
@@ -2036,7 +2060,7 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
   q->dilation_white = 0;
 #endif
   pixels_setup(q);
-  threshold(q, false);
+  threshold(q);
 
   /* A finder shows on several rows, so every other row finds it at half the
    * cost; the rows between are for when that came up short. */
@@ -2052,8 +2076,8 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
    * offset now, before grouping: the measurement does not depend on a grid
    * forming, so a frame that finds finders but fails to group still steers the
    * next one.  Consuming the sums here is also what keeps the inverted retry
-   * out of them -- it re-thresholds the same frame, and mixing two
-   * binarizations into one measurement would be meaningless. */
+   * out of them -- there the finders' ink is the frame's light, so the areas
+   * it gathers call for the opposite correction. */
   update_threshold_offset(q);
 #endif
 
@@ -2066,8 +2090,7 @@ void k_quirc_identify(struct k_quirc *q, bool find_inverted) {
     q->num_capstones = 0;
     q->num_grids = 0;
 
-    pixels_setup(q);
-    threshold(q, true);
+    invert_binarized(q);
 
     for (int i = 0; i < q->h; i++)
       finder_scan(q, i);

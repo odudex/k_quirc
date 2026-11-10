@@ -77,6 +77,11 @@ jobs:
       - name: Run alignment search bound test
         run: test/build_ci/k_quirc_alignment_search_test
 
+      - name: Run inverted code test
+        run: |
+          test/build_ci/k_quirc_inverted_254_test
+          test/build_ci/k_quirc_inverted_1024_test
+
       # The two defects this guards against were invisible to the validation
       # matrix - one was an out-of-bounds read into adjacent .rodata, the other
       # a left-shift of a negative value. Neither changes the pass/fail of a
@@ -96,6 +101,8 @@ jobs:
           test/build_asan/k_quirc_falloff_test
           test/build_asan/k_quirc_convergence_test
           test/build_asan/k_quirc_alignment_search_test
+          test/build_asan/k_quirc_inverted_254_test
+          test/build_asan/k_quirc_inverted_1024_test
 
       # Sanitized sweep over real images. Deliberately a narrow slice of the
       # matrix below - the point is to put the identify/decode path under the

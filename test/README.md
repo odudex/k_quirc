@@ -89,6 +89,20 @@ The gap between the two levels makes Otsu's between-class variance flat across a
 
 A capture that prompted it measured white at 232 in the centre and 110 in the code's far corner. A threshold taken from the centre sits at that corner's white level, so the corner binarizes solid dark, and on an animated sequence the same parts fail every time round. Every other vector and the validation matrix are evenly lit and cannot see it.
 
+## Inverted Codes
+
+`k_quirc_inverted_254_test` and `k_quirc_inverted_1024_test` read light-on-dark codes through the `K_QUIRC_INVERTED_RETRY` pass, which the library leaves out by default and these two targets define for themselves:
+
+```bash
+./build/k_quirc_inverted_254_test [vectors-dir [dark-on-light-image]]
+```
+
+Each vector in `inverted/vectors/` must go unread without `find_inverted`, and with it give back its exact payload on every frame of a held context, after a dark-on-light frame through the same context, and through `k_quirc_decode_grayscale()`.
+
+The pass reads the negative of the binarization already made, because the grey levels are gone by then: the region labels share the image's buffer unless they are 16 bits wide. It used to threshold that buffer a second time instead, so the default build read no inverted code at all, and a build with 16-bit labels read only those whose two levels straddled mid-gray. Hence one target per label width, and vectors whose levels sit well to one side (30/110 and 140/235) next to the sharp and the camera-degraded ones. Nothing else in the suite holds a light-on-dark code.
+
+The vectors are committed. To change the set, edit `CASES` in `inverted/gen_vectors.py` and re-run it; it needs `qrencode`, Pillow and numpy, and shares the camera model in `convergence/degrade.py`.
+
 ## Malformed Payloads
 
 `k_quirc_decode_payload_test` drives `decode_payload()` with hand-built bitstreams instead of images, covering symbols that pass Reed-Solomon but carry segment data no real encoder would emit:

@@ -7,7 +7,7 @@ A standalone QR code recognition and decoding library optimized for embedded sys
 - QR code versions 1-25 (up to ~2,500-byte payloads)
 - All four ECC levels (L/M/Q/H)
 - Numeric, Alphanumeric, Byte, and Kanji data types
-- Inverted QR code detection (white-on-black)
+- Inverted (light-on-dark) QR codes, when built with `K_QUIRC_INVERTED_RETRY` (off by default)
 - Multiple QR codes per image
 - Extended Channel Interpretation (ECI) support
 
@@ -64,7 +64,7 @@ int w, h;
 uint8_t *buf = k_quirc_begin(q, &w, &h);
 // Fill buf with grayscale image data (w * h bytes)
 memcpy(buf, frame_data, w * h);
-k_quirc_end(q, false);  // true to also detect inverted QR codes
+k_quirc_end(q, false);  // true to also read inverted QR codes (needs K_QUIRC_INVERTED_RETRY)
 
 int count = k_quirc_count(q);
 for (int i = 0; i < count; i++) {
@@ -88,8 +88,15 @@ Feature flags are set as compile definitions in `CMakeLists.txt`:
 |------|---------|-------------|
 | `K_QUIRC_BILINEAR_THRESHOLD` | Enabled | Threshold follows the local white level, for uneven lighting |
 | `K_QUIRC_ADAPTIVE_THRESHOLD` | Enabled | Auto-adjust threshold offset from timing patterns |
+| `K_QUIRC_INVERTED_RETRY` | Disabled | Read inverted (light-on-dark) codes: when a frame shows no code and the caller passed `find_inverted`, its negative is searched too |
 | `K_QUIRC_DEBUG` | Disabled | Debug visualization (thresholded buffer with grid overlays) |
 | `K_QUIRC_THRESHOLD_GRID` | `0` | Blocks per side the white level is measured over; `0` derives it from the image (one per 64 pixels), `1`-`8` fixes it for a project scanning at one resolution |
+
+### Inverted codes
+
+Inverted codes are not read by default. The `find_inverted` argument of `k_quirc_end()` and `k_quirc_decode_grayscale()` only takes effect in a build that defines `K_QUIRC_INVERTED_RETRY`; without it the argument is accepted and ignored, and a light-on-dark code is simply not found.
+
+With it, a frame in which no dark-on-light code was located is searched a second time as its negative. The second search reuses the first one's binarization, so it needs no extra memory and no second thresholding, but it does repeat the finder scan: a scanner that passes `find_inverted` pays for that on every frame without a code in view. A frame is read as one polarity or the other, never both.
 
 ## Constraints
 
